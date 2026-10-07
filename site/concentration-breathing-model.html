@@ -1599,6 +1599,8 @@ body.hints-off .hint-mark{display:none}
 │                              ├── врачу ─► окно печати или файл HTML
 │                              ├── ИИ-ассистенту врача · ИИ пациента ─► файл JSON
 │                              └── журнал ─► отдельное согласие, сырьё — флажком, с размером
+│   └── архив ───────────────► выгрузить · импортировать ─► сколько добавится и совпадёт,
+│                              настройки — отдельным флажком ─► «Импортировать» / «Отмена»
 ├── ? подсказки ─────────────► показать или скрыть маркеры
 │
 └── ⚙ Настройки
@@ -1640,6 +1642,7 @@ body.hints-off .hint-mark{display:none}
       <h2>Аналитика</h2>
       <p>Две вкладки. <b>Сводка</b> — за 30 дней, 90 дней (по умолчанию) или всё время: сигналы, средняя задержка и доля сессий с контактом, строки по причине и области (до, после, разница, тенденция значения до), регулярность, пропуски ответов, последние заметки. Меньше 5 сессий в строке — средние не показываются. Пороги сигналов предварительные: подобраны для проверки логики и уточняются по наблюдениям. При пустом журнале сводку можно посмотреть на примере — пример в журнал не записывается.</p>
       <p>Под сводкой — <b>выгрузка</b> того же периода: врачу на печать или файлом, ИИ-ассистенту врача и ИИ пациента файлом JSON. Перед каждой выгрузкой — согласие: период, состав, получатель. Журнал и сырьё — отдельной кнопкой и отдельным согласием, с примерным размером файла.</p>
+      <p><b>Архив</b> — там же, ниже: все записи и сырьё как есть плюс настройки, файл для вас самих — переезд на другое устройство, резервная копия. Импорт сначала показывает, сколько записей добавится и сколько совпадёт; одинаковые не дублируются, различающиеся сохраняются обе, копия с пометкой. Настройки восстанавливаются только по отдельному флажку. Напоминание — раз в месяц, а пока архива не было, ещё после каждой десятой сессии.</p>
       <p><b>Подробно</b> — корреляции латентности с параметрами, диаграмма рассеяния, журнал причин, гистограммы по органам и причинам, тепловая карта по часам суток. Экспорт в CSV.</p>
       <p>Нажатие на точку диаграммы показывает все параметры измерения.</p>
 
@@ -5188,6 +5191,15 @@ document.addEventListener('keydown',e=>{
       return new Promise(res=>{ const tx=d.transaction(Object.keys(objs),'readwrite');
         Object.entries(objs).forEach(([s,o])=>tx.objectStore(s).put(o));
         tx.oncomplete=()=>res(true); tx.onerror=tx.onabort=()=>res(false); }); },
+    // как лежит в базе, без достройки при чтении (код причины, derived): для архива (З-6)
+    async raw(store){ const d=await this.open(); if(!d) return [];
+      return new Promise(res=>{ const q=d.transaction(store,'readonly').objectStore(store).getAll();
+        q.onsuccess=()=>res(q.result||[]); q.onerror=()=>res([]); }); },
+    // массивы записей в несколько хранилищ одной транзакцией: импорт целиком или никак (З-6)
+    async putMany(map){ const d=await this.open(); if(!d) return false;
+      return new Promise(res=>{ const tx=d.transaction(Object.keys(map),'readwrite');
+        Object.entries(map).forEach(([s,list])=>list.forEach(o=>tx.objectStore(s).put(o)));
+        tx.oncomplete=()=>res(true); tx.onerror=tx.onabort=()=>res(false); }); },
     async del(store,id){ const d=await this.open(); if(!d) return false;
       return new Promise(res=>{ const tx=d.transaction(store,'readwrite');
         tx.objectStore(store).delete(id); tx.oncomplete=()=>res(true); tx.onerror=()=>res(false); }); },
@@ -5916,6 +5928,179 @@ document.addEventListener('keydown',e=>{
   });
 
   window.CB_EXPORT={buildJSON,doctorBody,doctorFile,buildJournal,journalSize,last:null,draft:DOCTOR_DRAFT,format:FMT,notice:NOTICE};
+})();
+
+// ── АРХИВ И ИМПОРТ (З-6) ────────────────────────────────────────────
+// Архив возвращает данные владельцу: полнота и точность, без словаря и оговорок.
+// Хранилища — как лежат в базе (DB.raw), настройки — отдельной частью со своей суммой.
+(function(){
+  const $=id=>document.getElementById(id);
+  const box=$('ana-summary'); if(!box) return;
+  const DB=window.CB_DB, F=window.CB_SUMMARY_FMT;
+  const FMT='cb-archive-1', DAY=864e5;
+  const STORES=['index','sessions','series'];
+  const SETTINGS_KEYS=['cb_settings_v1','cb_hints_off','organTargets'];
+  const LAST_KEY='cb_archive_v1';   // дата последнего архива; не входит в настройки архива (З-7 опирается на неё)
+  let pending=null, msg='';         // разобранный архив до подтверждения; строка итога в блоке «Архив»
+
+  // CRC-32 по кодовым единицам строки: ловит повреждение файла, работает без защищённого адреса
+  const TBL=(()=>{ const t=[]; for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c=c&1? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+  function crc32(str){ let c=0xFFFFFFFF;
+    for(let i=0;i<str.length;i++){ const u=str.charCodeAt(i);
+      c=TBL[(c^(u&255))&255]^(c>>>8); c=TBL[(c^(u>>>8))&255]^(c>>>8); }
+    return ((c^0xFFFFFFFF)>>>0).toString(16).padStart(8,'0'); }
+  // сравнение записей без зависимости от порядка ключей
+  const canon=x=>Array.isArray(x)? '['+x.map(canon).join(',')+']'
+    : x&&typeof x==='object'? '{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+canon(x[k])).join(',')+'}'
+    : JSON.stringify(x===undefined? null : x);
+  const day=t=>{ const d=new Date(t), z=n=>String(n).padStart(2,'0'); return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate()); };
+  const lastAt=()=>{ try{ const o=JSON.parse(localStorage.getItem(LAST_KEY)||'null'); return o&&o.lastAt? Date.parse(o.lastAt) : null; }catch(e){ return null; } };
+
+  async function build(now){
+    const stores={}; for(const s of STORES) stores[s]=await DB.raw(s);
+    const keys={}; SETTINGS_KEYS.forEach(k=>{ let v=null; try{ v=localStorage.getItem(k); }catch(e){} keys[k]=v; });
+    return {format:FMT,createdAt:new Date(now).toISOString(),dbVersion:1,
+      records:{counts:Object.fromEntries(STORES.map(s=>[s,stores[s].length])),crc:crc32(JSON.stringify(stores)),stores},
+      settings:{crc:crc32(JSON.stringify(keys)),keys}};
+  }
+
+  // Разбор архива: сколько добавится, совпадёт, различается. В базу ничего не пишет.
+  async function analyze(A,now){
+    if(!A||A.format!==FMT||!A.records||!A.records.stores) return {error:'Это не архив модели или его формат не поддерживается.'};
+    const S=A.records.stores;
+    if(crc32(JSON.stringify(S))!==A.records.crc) return {error:'Архив повреждён: контрольная сумма записей не совпадает. Ничего не импортировано.'};
+    const cur={}; for(const s of STORES) cur[s]=Object.fromEntries((await DB.raw(s)).map(r=>[r.id,r]));
+    const inc={}; STORES.forEach(s=>(S[s]||[]).forEach(r=>{ (inc[r.id]=inc[r.id]||{})[s]=r; }));
+    const at=new Date(now||Date.now()).toISOString();
+    const strip=r=>{ if(!r) return null; const o=Object.assign({},r); delete o.id; delete o.importedConflict; return o; };
+    const P={add:[],match:[],conflict:[],put:{index:[],sessions:[],series:[]},settings:null,settingsError:null};
+    Object.entries(inc).forEach(([id,rec])=>{
+      if(STORES.every(s=>!cur[s][id])){ P.add.push(id); STORES.forEach(s=>{ if(rec[s]) P.put[s].push(rec[s]); }); return; }
+      if(STORES.every(s=>canon(cur[s][id]||null)===canon(rec[s]||null))){ P.match.push(id); return; }
+      // различается: копия рядом с пометкой; если такая копия уже есть — совпадение, не дубль
+      let k=1;
+      for(;STORES.some(s=>cur[s][id+'~imp'+k]);k++)
+        if(STORES.every(s=>canon(strip(cur[s][id+'~imp'+k]))===canon(strip(rec[s])))){ P.match.push(id); return; }
+      const nid=id+'~imp'+k; P.conflict.push(nid);
+      STORES.forEach(s=>{ if(!rec[s]) return;
+        P.put[s].push(Object.assign({},rec[s],{id:nid},s==='series'? {} : {importedConflict:{of:id,at}})); });
+    });
+    if(A.settings){
+      if(A.settings.keys&&crc32(JSON.stringify(A.settings.keys))===A.settings.crc) P.settings=A.settings.keys;
+      else P.settingsError='Часть с настройками повреждена — настройки не восстанавливаются, записи можно импортировать.';
+    }
+    return P;
+  }
+  // Записи — всегда и одной транзакцией; настройки — только по отдельному согласию
+  async function apply(P,withSettings){
+    const ok=await DB.putMany(P.put);
+    let set=false;
+    if(ok&&withSettings&&P.settings){
+      Object.entries(P.settings).forEach(([k,v])=>{ try{ v===null? localStorage.removeItem(k) : localStorage.setItem(k,v); }catch(e){} });
+      set=true; }
+    return {ok,settings:set};
+  }
+
+  // Напоминание: раз в месяц с последнего архива (или с первой сессии, если архива не было);
+  // пока архива не было — ещё и после каждой десятой сессии
+  function reminder(now,n,firstAt,last){
+    if(!n) return null;
+    const ref=last||firstAt;
+    if(ref&&now-ref>30*DAY) return last? `Последний архив — ${F.date(new Date(last).toISOString())}, больше месяца назад.` : 'Архив ещё ни разу не делался, а записи ведутся больше месяца.';
+    if(!last&&n%10===0) return `Уже ${n} сессий, а архива ещё нет.`;
+    return null;
+  }
+  async function journalInfo(){
+    const rows=await DB.raw('index'); let first=null;
+    rows.forEach(r=>{ const t=Date.parse(r.at); if(t&&(first===null||t<first)) first=t; });
+    return {n:rows.length,first};
+  }
+
+  function save(name,text){
+    window.CB_ARCHIVE.last={name,text};
+    if(!window.URL||!URL.createObjectURL) return;
+    const url=URL.createObjectURL(new Blob([text],{type:'application/json'})), a=document.createElement('a');
+    a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL&&URL.revokeObjectURL(url),1000); }
+  // выгружает и отмечает дату; сообщение в блоке составляет вызывающий
+  async function exportArchive(){
+    const now=Date.now(), A=await build(now);
+    save(`arhiv-${day(now)}.json`,JSON.stringify(A));
+    try{ localStorage.setItem(LAST_KEY,JSON.stringify({lastAt:A.createdAt})); }catch(e){}
+    return A;
+  }
+
+  // ── Блок «Архив» под выгрузкой ──
+  async function block(){
+    const {n,first}=await journalInfo(), last=lastAt(), rem=reminder(Date.now(),n,first,last);
+    return `<div class="stat-card" id="arc-box"><h4>Архив</h4>
+      <p class="sum-p">${last? 'Последний архив: '+F.date(new Date(last).toISOString()) : 'Архив ещё не делался'} · записей в журнале: ${n}</p>`+
+      (rem? `<div class="sum-sig">⚠ ${F.esc(rem)} Без архива записи живут только в этом браузере.</div>` : '')+
+      `<div class="sum-per"><button class="sum-btn" id="arc-export">Выгрузить архив</button>
+      <button class="sum-btn" id="arc-import">Импортировать…</button>
+      <input type="file" id="arc-file" accept=".json,application/json" style="display:none"></div>
+      <p class="sum-muted">Архив — все записи и сырьё как есть, плюс настройки отдельной частью. Он для вас самих: переезд на другое устройство, резервная копия.</p>
+      <div id="arc-preview" style="display:none"></div>`+(msg? `<p class="sum-p" id="arc-msg">${F.esc(msg)}</p>` : '')+`</div>`;
+  }
+  async function preview(text){
+    let A=null; try{ A=JSON.parse(text); }catch(e){}
+    const P=await analyze(A,Date.now()), el=$('arc-preview');
+    pending=P.error? null : P;
+    el.innerHTML=`<div class="sum-demo" style="color:#c9d8e8;background:#0b131c;border-color:#2c5f95">`+(P.error
+      ? `<p class="sum-p" id="arc-error">${F.esc(P.error)}</p><p class="sum-p"><button class="sum-btn" id="arc-cancel">Закрыть</button></p>`
+      : `<p class="sum-p" id="arc-counts">Добавится: <b>${P.add.length}</b> · совпадёт: <b>${P.match.length}</b> · различаются: <b>${P.conflict.length}</b>`+
+        (P.conflict.length? ' (сохранятся обе, копия с пометкой)' : '')+`</p>`+
+        (P.settings? `<p class="sum-p"><label><input type="checkbox" id="arc-settings"> восстановить настройки из архива</label></p>
+          <p class="sum-muted">По умолчанию остаются настройки этого устройства — на новом они могут быть уже свои.</p>` : '')+
+        (P.settingsError? `<p class="sum-muted">${F.esc(P.settingsError)}</p>` : '')+
+        `<p class="sum-p"><button class="sum-btn" id="arc-ok">Импортировать</button> <button class="sum-btn" id="arc-cancel">Отмена</button></p>`)+`</div>`;
+    el.style.display='';
+    return P;
+  }
+  box.addEventListener('cb-summary',async e=>{
+    if(e.detail.demo) return;
+    pending=null;
+    const h=await block(); const old=$('arc-box'); if(old) old.remove();
+    box.insertAdjacentHTML('beforeend',h); msg='';
+  });
+  box.addEventListener('click',async e=>{
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.id==='arc-export'){
+      const A=await exportArchive();
+      msg='Архив сохранён: '+STORES.map(s=>`${s} — ${A.records.counts[s]}`).join(', ')+'.';
+      if(window.__cbSummaryRender) window.__cbSummaryRender();
+    }
+    if(b.id==='arc-import') $('arc-file').click();
+    if(b.id==='arc-cancel'){ pending=null; $('arc-preview').style.display='none'; }
+    if(b.id==='arc-ok'&&pending){
+      const P=pending, ws=!!($('arc-settings')&&$('arc-settings').checked); pending=null;
+      const r=await apply(P,ws);
+      msg=r.ok? `Импортировано: добавлено ${P.add.length}, совпало ${P.match.length}, копий с пометкой ${P.conflict.length}.`+
+        (r.settings? ' Настройки восстановлены — применятся после перезагрузки страницы.' : '')
+        : 'Импорт не удался — база не изменилась.';
+      if(window.__cbSummaryRender) window.__cbSummaryRender();
+    }
+  });
+  box.addEventListener('change',e=>{
+    if(e.target.id!=='arc-file'||!e.target.files[0]) return;
+    const fr=new FileReader(); fr.onload=()=>preview(String(fr.result)); fr.readAsText(e.target.files[0]);
+    e.target.value='';
+  });
+
+  // строка на экране после сессии: эта сессия будет n+1-й
+  const ps=$('post-screen');
+  if(ps){
+    const line=document.createElement('div'); line.id='ps-archive'; line.className='sub'; line.style.display='none';
+    ps.insertBefore(line,ps.querySelector('.rs-actions'));
+    new MutationObserver(async()=>{
+      if(!ps.classList.contains('on')) return;
+      const {n,first}=await journalInfo(), rem=reminder(Date.now(),n+1,first||Date.now(),lastAt());
+      line.textContent=rem? '⚠ '+rem+' Сохраните архив: 📊 Аналитика → Архив.' : '';
+      line.style.display=rem? '' : 'none';
+    }).observe(ps,{attributes:true,attributeFilter:['class']});
+  }
+
+  window.CB_ARCHIVE={build,analyze,apply,preview,reminder,crc32,exportArchive,format:FMT,last:null};
 })();
 
 </script>

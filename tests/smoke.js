@@ -423,6 +423,112 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   const L4 = W.CB_EXPORT.last, J4 = L4 && JSON.parse(L4.text);
   L4 && /^zhurnal-\d{4}-\d\d-\d\d\.json$/.test(L4.name) && J4.includesRaw && J4.series.length && J4.sessions.length && J4.notice === W.CB_EXPORT.notice
     ? ok('журнал: файл с сессиями и сырьём, обязательная строка') : bad('журнал: ' + (L4 && L4.name));
+
+  // З-6: архив и импорт — круговая проверка
+  const AR = W.CB_ARCHIVE, STO = ['index', 'sessions', 'series'];
+  // строгое сравнение: число ключей, undefined, NaN — до последнего поля
+  const same = (a, b) => {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return Number.isNaN(a) && Number.isNaN(b);
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && same(a[k], b[k])); };
+  const snap = async () => { const o = {}; for (const s of STO) o[s] = (await W.CB_DB.raw(s)).sort((a, b) => a.id < b.id ? -1 : 1); return o; };
+  const count = async () => (await Promise.all(STO.map(s => W.CB_DB.raw(s)))).map(x => x.length).join('/');
+  const clearDB = async () => { const db = await W.CB_DB.open();
+    await new Promise(r => { const tx = db.transaction(STO, 'readwrite'); STO.forEach(s => tx.objectStore(s).clear()); tx.oncomplete = r; }); };
+  // разные записи: старая cb-record-1 без кода (только сырая, без достройки), строка index до Р-14
+  await W.CB_DB.putMany({index: [{id: 'ARC1', at: '2026-05-01T08:00:00Z', reason: 'Тревога', pre: 6, post: 4}],
+    sessions: [{id: 'ARC1', fmt: 'cb-record-1', reason: 'Тревога', stated: {pre: {level: 6}, note: 'старая «запись» 🌿\nвторая строка'}}],
+    series: []});
+  W.localStorage.setItem('cb_settings_v1', JSON.stringify({sliders: {'t-in': '4'}, select: {}}));
+  W.localStorage.setItem('cb_hints_off', '1');
+  const setBefore = W.localStorage.getItem('cb_settings_v1');
+  const before = await snap();
+  const raw1 = before.sessions.find(r => r.id === 'ARC1');
+  !('reasonCode' in raw1) && before.sessions.some(r => r.id === 'S2OLD' && !('holds' in r.derived))
+    ? ok('архив читает базу без достройки: старая запись без кода, без derived')
+    : bad('DB.raw достраивает записи');
+  const arcText = JSON.stringify(await AR.build(Date.now()));
+  const arc = () => JSON.parse(arcText);
+  arc().format === 'cb-archive-1' && /^[0-9a-f]{8}$/.test(arc().records.crc) && arc().settings.keys.cb_hints_off === '1'
+    && !('dictionary' in arc()) && !('notice' in arc())
+    ? ok('архив: версия, контрольная сумма, настройки отдельной частью, без словаря и оговорок')
+    : bad('состав архива: ' + Object.keys(arc()).join(','));
+  await clearDB();
+  W.localStorage.removeItem('cb_settings_v1'); W.localStorage.setItem('cb_hints_off', '0');
+  (await count()) === '0/0/0' ? ok('база очищена') : bad('база не очищена: ' + await count());
+  const P1 = await AR.analyze(arc(), Date.now());
+  const ids = new Set(STO.flatMap(s => before[s].map(r => r.id)));
+  P1.add.length === ids.size && !P1.match.length && !P1.conflict.length
+    ? ok(`разбор перед импортом: добавится ${ids.size}, совпадёт 0`) : bad('разбор: ' + JSON.stringify([P1.add.length, P1.match.length, P1.conflict.length]));
+  await AR.apply(P1, false);
+  const after = await snap();
+  STO.every(s => before[s].length === after[s].length && before[s].every((r, i) => same(r, after[s][i])))
+    ? ok(`круговая проверка: все три хранилища совпадают до последнего поля (${await count()})`)
+    : bad('круговая проверка: ' + STO.map(s => s + ' ' + before[s].length + '→' + after[s].length).join(', ')
+        + ' ' + JSON.stringify(STO.flatMap(s => before[s].filter((r, i) => !same(r, after[s][i])).map(r => r.id))));
+  W.localStorage.getItem('cb_settings_v1') === null && W.localStorage.getItem('cb_hints_off') === '0'
+    ? ok('без согласия настройки устройства не меняются') : bad('настройки изменились без согласия');
+  // повторный импорт — без дублей
+  const P2 = await AR.analyze(arc(), Date.now());
+  const cnt1 = await count();
+  await AR.apply(P2, true);
+  !P2.add.length && !P2.conflict.length && P2.match.length === ids.size && (await count()) === cnt1
+    ? ok('повторный импорт: всё совпало, дублей нет') : bad('повторный импорт: ' + JSON.stringify([P2.add.length, P2.match.length, P2.conflict.length]));
+  W.localStorage.getItem('cb_settings_v1') === setBefore && W.localStorage.getItem('cb_hints_off') === '1'
+    ? ok('с согласием настройки совпадают с архивом') : bad('настройки не восстановлены');
+  // та же id, другое содержимое — обе с пометкой; повторно — без новой копии
+  const A2 = arc(), s0 = A2.records.stores.sessions.find(r => r.id === 'ARC1');
+  s0.stated.note = 'изменённая заметка';
+  A2.records.crc = AR.crc32(JSON.stringify(A2.records.stores));
+  const P3 = await AR.analyze(A2, Date.now());
+  await AR.apply(P3, false);
+  const cp = (await W.CB_DB.getMany('sessions', ['ARC1~imp1']))['ARC1~imp1'];
+  const cpi = (await W.CB_DB.getMany('index', ['ARC1~imp1']))['ARC1~imp1'];
+  const orig = (await W.CB_DB.getMany('sessions', ['ARC1'])).ARC1;
+  P3.conflict.length === 1 && cp && cp.stated.note === 'изменённая заметка' && cp.importedConflict.of === 'ARC1'
+    && cpi && cpi.importedConflict.of === 'ARC1' && same(orig, raw1)
+    ? ok('различающаяся запись: сохранены обе, копия с пометкой importedConflict')
+    : bad('конфликт id: ' + JSON.stringify(P3.conflict));
+  const cnt3 = await count(), P4 = await AR.analyze(A2, Date.now());
+  await AR.apply(P4, false);
+  !P4.conflict.length && !P4.add.length && (await count()) === cnt3
+    ? ok('повторный импорт той же копии — без новой копии') : bad('копия задвоилась: ' + JSON.stringify(P4.conflict));
+  // повреждённый архив
+  const A5 = arc(); A5.records.stores.index[0].pre = 99;
+  const P5 = await AR.analyze(A5, Date.now());
+  P5.error && /повреждён/.test(P5.error) && (await count()) === cnt3
+    ? ok('повреждённые записи: импорт отказывает, база не тронута') : bad('повреждение не замечено');
+  const A6 = arc(); A6.settings.keys.cb_hints_off = '0';
+  const P6 = await AR.analyze(A6, Date.now());
+  !P6.error && !P6.settings && P6.settingsError
+    ? ok('повреждённые настройки: записи импортируются, настройки — нет') : bad('повреждение настроек: ' + JSON.stringify(P6.settingsError));
+  // напоминание
+  const RN = Date.now(), rm = AR.reminder;
+  /10 сессий/.test(rm(RN, 10, RN - 5*DAY, null)) && rm(RN, 11, RN - 5*DAY, null) === null
+    && /ни разу/.test(rm(RN, 3, RN - 40*DAY, null)) && rm(RN, 10, RN - 40*DAY, RN - 5*DAY) === null
+    && /больше месяца/.test(rm(RN, 12, RN - 90*DAY, RN - 31*DAY))
+    ? ok('напоминание: каждая десятая без архива, раз в месяц') : bad('напоминание');
+  // интерфейс: выгрузка архива и импорт через разбор
+  W.localStorage.removeItem('cb_archive_v1');
+  await W.__cbSummaryRender(); await wait(200);
+  d.getElementById('arc-box') && d.getElementById('arc-box').textContent.includes('Архив ещё не делался')
+    ? ok('блок «Архив» под выгрузкой') : bad('блока «Архив» нет');
+  click(W, d.getElementById('arc-export')); await wait(300);
+  const AL = AR.last;
+  AL && /^arhiv-\d{4}-\d\d-\d\d\.json$/.test(AL.name) && W.localStorage.getItem('cb_archive_v1')
+    && d.getElementById('arc-box').textContent.includes('Последний архив')
+    ? ok('архив выгружается из интерфейса, дата архива запомнена') : bad('выгрузка архива: ' + (AL && AL.name));
+  await AR.preview(AL.text); await wait(50);
+  const cnt7 = await count();
+  /Добавится: 0.*совпадёт: \d+/.test(d.getElementById('arc-counts').textContent) && d.getElementById('arc-settings')
+    && !d.getElementById('arc-settings').checked
+    ? ok('перед импортом: сколько добавится и совпадёт, настройки — отдельный флажок, выключен')
+    : bad('предпросмотр импорта: ' + d.getElementById('arc-preview').textContent);
+  click(W, d.getElementById('arc-ok')); await wait(400);
+  (await count()) === cnt7 && /Импортировано/.test(d.getElementById('arc-box').textContent)
+    ? ok('импорт из интерфейса: итог показан, дублей нет') : bad('импорт из интерфейса');
   d.getElementById('m-analytics').classList.remove('open');
 
   // Возврат из настроек

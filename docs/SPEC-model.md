@@ -25,6 +25,8 @@
 │                              ├── врачу ─► окно печати или файл HTML
 │                              ├── ИИ-ассистенту врача · ИИ пациента ─► файл JSON
 │                              └── журнал ─► отдельное согласие, сырьё — флажком, с размером
+│   └── архив ───────────────► выгрузить · импортировать ─► сколько добавится и совпадёт,
+│                              настройки — отдельным флажком ─► «Импортировать» / «Отмена»
 └── ⚙ Настройки
     ├── Быстрые ─────────────► экран настройки в режиме сохранения
     │                          «Сохранить и выйти» / «Отмена» ─► туда, откуда пришли
@@ -51,7 +53,8 @@
 `fb-run`, `lat-btn`, `hint-cloud`, `hints-toggle`,
 `ps-again`, `rs-cancel`, `adv-cancel`, `sess-exit`, `tb-ana`,
 `ana-tabs`, `ana-summary`, `analytics-content`, `ana-det-btns`,
-`exp-bar`, `exp-print`, `exp-html`, `exp-ai-doc`, `exp-ai-pat`, `exp-journal`, `exp-consent`, `exp-details`, `exp-line`, `exp-raw`, `exp-ok`, `exp-cancel`, `cb-print`.
+`exp-bar`, `exp-print`, `exp-html`, `exp-ai-doc`, `exp-ai-pat`, `exp-journal`, `exp-consent`, `exp-details`, `exp-line`, `exp-raw`, `exp-ok`, `exp-cancel`, `cb-print`,
+`arc-box`, `arc-export`, `arc-import`, `arc-file`, `arc-preview`, `arc-counts`, `arc-settings`, `arc-ok`, `arc-cancel`, `arc-msg`, `arc-error`, `ps-archive`.
 
 ## Границы правок
 Файл большой и слоистый. Менять точечно через `str_replace`, не переписывать блоками.
