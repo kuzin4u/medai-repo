@@ -181,6 +181,9 @@ select { background:#101010; color:#ccc; border:1px solid #2a2a2a; border-radius
 .sum-tbl td.few{text-align:left;color:#7f93ab;font-style:italic;white-space:normal}
 .sum-tbl .worse{color:#ff9f6e;font-weight:600}
 .sum-demo{font-size:12px;color:#ffe08a;background:#2a2208;border:1px solid #5a4a12;border-radius:8px;padding:7px 10px;margin-bottom:10px}
+/* Выгрузка врачу (З-5): при печати видна только страница для врача */
+#cb-print{display:none}
+@media print{ body>*:not(#cb-print){display:none!important} #cb-print{display:block!important} body{background:#fff!important} }
 .stat-timeline { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 6px; }
 .tl-dot {
   width: 12px; height: 12px; border-radius: 3px; cursor: pointer;
@@ -1591,7 +1594,11 @@ body.hints-off .hint-mark{display:none}
 │   └── повторное нажатие ───► остановить и сохранить
 │
 ├── 🧠 Теория · 🫁 Практика · ⚙️ Управление ─► разделы документации
-├── 📊 Аналитика ────────────► «Сводка» (по умолчанию) · «Подробно»: корреляции, экспорт
+├── 📊 Аналитика ────────────► «Сводка» (по умолчанию) · «Подробно»: корреляции, CSV
+│   └── выгрузка сводки ─────► согласие: период · состав · получатель
+│                              ├── врачу ─► окно печати или файл HTML
+│                              ├── ИИ-ассистенту врача · ИИ пациента ─► файл JSON
+│                              └── журнал ─► отдельное согласие, сырьё — флажком, с размером
 ├── ? подсказки ─────────────► показать или скрыть маркеры
 │
 └── ⚙ Настройки
@@ -1632,6 +1639,7 @@ body.hints-off .hint-mark{display:none}
 
       <h2>Аналитика</h2>
       <p>Две вкладки. <b>Сводка</b> — за 30 дней, 90 дней (по умолчанию) или всё время: сигналы, средняя задержка и доля сессий с контактом, строки по причине и области (до, после, разница, тенденция значения до), регулярность, пропуски ответов, последние заметки. Меньше 5 сессий в строке — средние не показываются. Пороги сигналов предварительные: подобраны для проверки логики и уточняются по наблюдениям. При пустом журнале сводку можно посмотреть на примере — пример в журнал не записывается.</p>
+      <p>Под сводкой — <b>выгрузка</b> того же периода: врачу на печать или файлом, ИИ-ассистенту врача и ИИ пациента файлом JSON. Перед каждой выгрузкой — согласие: период, состав, получатель. Журнал и сырьё — отдельной кнопкой и отдельным согласием, с примерным размером файла.</p>
       <p><b>Подробно</b> — корреляции латентности с параметрами, диаграмма рассеяния, журнал причин, гистограммы по органам и причинам, тепловая карта по часам суток. Экспорт в CSV.</p>
       <p>Нажатие на точку диаграммы показывает все параметры измерения.</p>
 
@@ -4982,7 +4990,7 @@ document.addEventListener('keydown',e=>{
   const HINTS=[
     ['#tb-quick','<b>⚡ Quick Start · провести сессию</b> — ведение: экран гаснет, идут звук и отсчёт фаз, глаза закрыты, нажимать ничего не нужно. Обычный путь и при боли, и при расслаблении.'],
     ['#tb-proc','<b>▶ Запустить процесс · начать воздействие</b> — глаза открыты: видны схема, «Процесс концентрации — обратная связь» и «Латентность отклика». Нужно, когда хотите измерить отклик, а не просто провести сессию.'],
-    ['#tb-ana','<b>📊 Аналитика</b> — «Сводка» за период: сигналы, строки по причине и области, регулярность; «Подробно» — корреляции, диаграмма рассеяния, экспорт. Осмысленна через несколько сессий: по одной видна только точка.'],
+    ['#tb-ana','<b>📊 Аналитика</b> — «Сводка» за период: сигналы, строки по причине и области, регулярность, выгрузка врачу и ИИ; «Подробно» — корреляции, диаграмма рассеяния, экспорт. Осмысленна через несколько сессий: по одной видна только точка.'],
     ['#tb-set','<b>⚙ Настройки</b> сохраняются и не меняются от сессии к сессии. <b>Быстрые</b> — «куда направляем» и «режим дыхания». <b>Расширенные</b> — фазы дыхания, интенсивность, частота и сила импульса, орган-цель, пульс, громкости.'],
     ['#adv-save','<b>Сохранить и выйти</b> — значения применяются при каждом открытии модели, пока вы их не измените. <b>Отмена</b> вернёт то, что было до входа в настройки.'],
     ['#ss-go','Режим дыхания задаёт ориентир задержки, а не норматив: отпускаете сами, как станет некомфортно. Концентрация идёт только в фазе <b>задержка↓</b>.'],
@@ -5493,8 +5501,11 @@ document.addEventListener('keydown',e=>{
     const lines=Object.values(by).map(g=>{
       const L=g.list, o={key:g.key,reasonCode:g.reasonCode,reason:g.reason,area:g.area,areaOther:g.areaOther,
         group:g.group,n:L.length,few:L.length<MIN_N};
-      if(o.few) return o;
       const pre=L.filter(r=>num(r.pre)), both=pre.filter(r=>num(r.post));
+      // факты для выгрузки ИИ пациента (З-5): разница при любом числе сессий, с объёмом
+      o.pairN=both.length; o.pairDiff=avg(both.map(r=>r.post-r.pre));
+      o.first=new Date(L[0].t).toISOString(); o.last=new Date(L[L.length-1].t).toISOString();
+      if(o.few) return o;
       o.preAvg=avg(pre.map(r=>r.pre));
       o.postAvg=avg(L.filter(r=>num(r.post)).map(r=>r.post));
       o.diff=avg(both.map(r=>r.post-r.pre));
@@ -5534,7 +5545,9 @@ document.addEventListener('keydown',e=>{
     const skipped={pre:rs.length? rs.filter(r=>!num(r.pre)).length/rs.length : null,
                    post:rs.length? rs.filter(r=>!num(r.post)).length/rs.length : null};
 
+    // since и total — по всему журналу, от периода не зависят (шапка выгрузки, З-5)
     return {period, from:new Date(from).toISOString(), n:rs.length, total:all.length,
+      since:all.length? new Date(all[0].t).toISOString() : null,
       lines, signals, holds, regular, skipped, ids:rs.map(r=>r.id).reverse()};
   }
 
@@ -5568,6 +5581,14 @@ document.addEventListener('keydown',e=>{
   function areaName(a,other){ if(a==='other') return other||'другое'; if(!a) return '';
     const o=document.querySelector('#c-organ option[value="'+a+'"]'); return o? o.textContent : a; }
   const lineName=l=>esc(l.reason||l.reasonCode)+(l.area? ' · '+esc(areaName(l.area,l.areaOther)) : '');
+  function sigText(s){
+    if(s.type==='pre') return `«${lineName(s)}»: `+(s.group==='well'
+      ? `самочувствие до сессии снижается — ${sign(s.trend)} балла за 30 дней`
+      : `значение до сессии растёт — ${sign(s.trend)} балла за 30 дней`);
+    if(s.type==='worse') return `Отметки «усилилась»: ${s.n} за период, последняя ${date(s.last)}`;
+    if(s.type==='break') return `Перерыв ${s.days} дн. после регулярной практики (${s.n} сессий за 4 недели до него)`;
+    return '';
+  }
 
   async function lastNotes(ids){
     const pick=ids.slice(0,30), ss=window.CB_DB? await window.CB_DB.getMany('sessions',pick) : {};
@@ -5585,14 +5606,7 @@ document.addEventListener('keydown',e=>{
         (S.total||demoOn? '' : `<p class="sum-p"><button class="sum-btn" data-demo="on">показать на примере</button></p>`)+`</div>`;
     }
     // сигналы
-    const sig=S.signals.map(s=>{
-      if(s.type==='pre') return `«${lineName(s)}»: `+(s.group==='well'
-        ? `самочувствие до сессии снижается — ${sign(s.trend)} балла за 30 дней`
-        : `значение до сессии растёт — ${sign(s.trend)} балла за 30 дней`);
-      if(s.type==='worse') return `Отметки «усилилась»: ${s.n} за период, последняя ${date(s.last)}`;
-      if(s.type==='break') return `Перерыв ${s.days} дн. после регулярной практики (${s.n} сессий за 4 недели до него)`;
-      return '';
-    });
+    const sig=S.signals.map(sigText);
     h+=`<div class="stat-card"><h4>Сигналы</h4>`+(sig.length? sig.map(t=>`<div class="sum-sig">⚠ ${t}</div>`).join('')
       : `<p class="sum-p">Сигналов нет.</p>`)+`</div>`;
     // строка по периоду
@@ -5632,6 +5646,8 @@ document.addEventListener('keydown',e=>{
     const S=summarize(rows,Date.now(),period);
     if(!demoOn&&S.n) notes=await lastNotes(S.ids);
     box.innerHTML=html(S,notes);
+    // выгрузка (З-5) берёт ровно то, что показано
+    box.dispatchEvent(new CustomEvent('cb-summary',{detail:{S,notes,demo:demoOn}}));
     return S;
   }
 
@@ -5655,7 +5671,251 @@ document.addEventListener('keydown',e=>{
 
   window.CB_SUMMARY=summarize;
   window.CB_SUMMARY_DEMO=demo;
+  window.CB_SUMMARY_FMT={esc,fmt,sign,pct,date,areaName,lineName,sigText};
   window.__cbSummaryRender=render;
+})();
+
+// ── ВЫГРУЗКА (З-5) ──────────────────────────────────────────────────
+// Выгружается то, что показано в сводке: тот же период, те же данные.
+// Журнал и сырьё — отдельной кнопкой и отдельным согласием.
+(function(){
+  const $=id=>document.getElementById(id);
+  const box=$('ana-summary'); if(!box) return;
+  const F=window.CB_SUMMARY_FMT;
+  const FMT='cb-export-1';
+  const DOCTOR_DRAFT=true;   // снять после З-10: страницу ещё не видел ни один практикующий врач
+  const NOTICE='Материал анамнеза, а не диагностические данные: часть показателей заявлена пациентом.';
+  const O={svc:'служебное',key:'выбрано человеком',stated:'заявлено человеком',calc:'вычислено моделью'};
+  const PER={30:'30 дней',90:'90 дней',all:'всё время'};
+  const perCode=p=>p==='all'?'vse':p+'d';
+  const day=t=>{ const d=new Date(t), z=n=>String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate()); };
+  const v=x=>x===undefined?null:x;
+
+  // ── Поля выгрузки: одно место для данных и словаря ──
+  // k — имя, o — происхождение, u — единицы, m — способ расчёта, get — откуда значение.
+  // of — вложенные поля (list — массив). Словарь строится обходом этой же таблицы.
+  const SIG=[
+    {k:'type',o:O.calc,m:'pre — значение до меняется в тревожную сторону; worse — отметки «усилилась»; break — обрыв после регулярной практики',get:s=>s.type},
+    {k:'reasonCode',o:O.key,m:'код причины R01–R12, R00 — неизвестная',get:s=>v(s.key&&s.key.split('|')[0])},
+    {k:'reason',o:O.key,get:s=>v(s.reason)},
+    {k:'area',o:O.stated,get:s=>v(s.area)},
+    {k:'areaOther',o:O.stated,get:s=>v(s.areaOther)},
+    {k:'trend',o:O.calc,u:'балл за 30 дней',m:'наклон прямой по значениям до (pre)',get:s=>v(s.trend)},
+    {k:'n',o:O.calc,u:'шт.',m:'worse — число отметок за период; break — сессий за 4 недели до перерыва',get:s=>v(s.n)},
+    {k:'days',o:O.calc,u:'дни',m:'break — дней без сессий до сегодня',get:s=>v(s.days)},
+    {k:'last',o:O.calc,u:'дата ISO',m:'последняя отметка или сессия',get:s=>v(s.last)}
+  ];
+  const LINE=[
+    {k:'reasonCode',o:O.key,m:'код причины R01–R12',get:l=>l.reasonCode},
+    {k:'reason',o:O.key,get:l=>v(l.reason)},
+    {k:'area',o:O.stated,m:'область, выбранная до сессии',get:l=>l.area},
+    {k:'areaOther',o:O.stated,m:'область своими словами, если выбрано «другое»',get:l=>l.areaOther},
+    {k:'areaName',o:O.stated,m:'название области словами',get:l=>F.areaName(l.area,l.areaOther)||null},
+    {k:'n',o:O.calc,u:'сессий',get:l=>l.n},
+    {k:'few',o:O.calc,m:'меньше 5 сессий — средние не считаются',get:l=>l.few}
+  ];
+  const LINE_AVG=[
+    {k:'preAvg',o:O.stated,u:'балл 0–10',m:'среднее ответов до сессии на главный вопрос',get:l=>v(l.preAvg)},
+    {k:'postAvg',o:O.stated,u:'балл 0–10',m:'среднее ответов после сессии',get:l=>v(l.postAvg)},
+    {k:'diff',o:O.calc,u:'балл',m:'среднее (после − до) по сессиям с обоими ответами; состояние в моменте',get:l=>v(l.diff)},
+    {k:'trend',o:O.calc,u:'балл за 30 дней',m:'наклон прямой по значениям до; меняется ли фон',get:l=>v(l.trend)},
+    {k:'worse',o:O.calc,m:'тенденция до в тревожную сторону (у группы well — снижение, у остальных — рост) на 1 балл за 30 дней и больше',get:l=>!!l.worse}
+  ];
+  const COMMON=[
+    {k:'format',o:O.svc,m:'версия формата выгрузки',get:()=>FMT},
+    {k:'exportedAt',o:O.svc,u:'дата ISO',get:(S,c)=>new Date(c.now).toISOString()},
+    {k:'notice',o:O.svc,m:'обязательная строка о происхождении данных',get:()=>NOTICE},
+    {k:'recipient',o:O.key,m:'получатель, выбранный при выгрузке',get:(S,c)=>c.recipient},
+    {k:'period',o:O.key,m:'период сводки, выбранный человеком',of:[
+      {k:'code',o:O.key,m:'30 | 90 | all',get:S=>String(S.period)},
+      {k:'from',o:O.calc,u:'дата ISO',get:S=>S.from},
+      {k:'to',o:O.svc,u:'дата ISO',get:(S,c)=>new Date(c.now).toISOString()},
+      {k:'sessions',o:O.calc,u:'сессий',m:'за период',get:S=>S.n}],get:S=>S},
+    {k:'practice',o:O.calc,m:'по всему журналу, от периода не зависит',of:[
+      {k:'since',o:O.calc,u:'дата ISO',m:'первая сессия в журнале',get:S=>S.since},
+      {k:'total',o:O.calc,u:'сессий',m:'всего в журнале',get:S=>S.total}],get:S=>S},
+    {k:'signals',o:O.calc,m:'пороги предварительные, уточняются по наблюдениям',list:true,of:SIG,get:S=>S.signals},
+    {k:'holds',o:O.calc,m:'задержки после выдоха за период',of:[
+      {k:'holdAvg',o:O.calc,u:'с',m:'средняя длительность полной задержки; оборванные не входят',get:H=>H.holdAvg},
+      {k:'holdN',o:O.calc,u:'шт.',m:'полных задержек',get:H=>H.holdN},
+      {k:'holdOpenN',o:O.calc,u:'шт.',m:'оборванных задержек (без отпускания)',get:H=>H.holdOpenN},
+      {k:'contactShare',o:O.calc,u:'доля 0–1',m:'сессий с контактом среди сессий с задержками',get:H=>H.contactShare},
+      {k:'sessionsWithHolds',o:O.calc,u:'сессий',get:H=>H.sessions},
+      {k:'noData',o:O.calc,u:'сессий',m:'записаны до учёта задержек',get:H=>H.noData}],get:S=>S.holds},
+    {k:'lines',o:O.calc,m:'строка на пару «причина + область»',list:true,of:LINE.concat(LINE_AVG),get:S=>S.lines},
+    {k:'regular',o:O.calc,m:'регулярность за период',of:[
+      {k:'days',o:O.calc,u:'дни',m:'дней с сессиями',get:R=>R.days},
+      {k:'span',o:O.calc,u:'дни',m:'дней в периоде',get:R=>R.span},
+      {k:'share',o:O.calc,u:'доля 0–1',get:R=>R.share},
+      {k:'maxGap',o:O.calc,u:'дни',m:'самый длинный перерыв, считая до сегодня',get:R=>R.maxGap}],get:S=>S.regular},
+    {k:'skipped',o:O.calc,m:'доля сессий без ответа на главный вопрос',of:[
+      {k:'pre',o:O.calc,u:'доля 0–1',get:K=>K.pre},
+      {k:'post',o:O.calc,u:'доля 0–1',get:K=>K.post}],get:S=>S.skipped},
+    {k:'notes',o:O.stated,m:'последние 5 заметок дословно',list:true,of:[
+      {k:'at',o:O.svc,u:'дата ISO',get:n=>n.at},
+      {k:'note',o:O.stated,m:'дословно',get:n=>n.note}],get:(S,c)=>c.notes}
+  ];
+  // ИИ пациента: факты по парам, без вывода о том, что помогает
+  const PAIRS={k:'pairs',o:O.calc,m:'по каждой паре «причина + область» за период, при любом числе сессий; вывод делает получатель',list:true,of:[
+    {k:'reasonCode',o:O.key,get:l=>l.reasonCode},
+    {k:'reason',o:O.key,get:l=>v(l.reason)},
+    {k:'area',o:O.stated,get:l=>l.area},
+    {k:'areaOther',o:O.stated,get:l=>l.areaOther},
+    {k:'n',o:O.calc,u:'сессий',get:l=>l.n},
+    {k:'nBoth',o:O.calc,u:'сессий',m:'с ответами и до, и после',get:l=>l.pairN},
+    {k:'diff',o:O.calc,u:'балл',m:'среднее (после − до) по сессиям с обоими ответами',get:l=>l.pairDiff},
+    {k:'few',o:O.calc,m:'меньше 5 сессий — разница по малому числу',get:l=>l.few},
+    {k:'first',o:O.svc,u:'дата ISO',get:l=>l.first},
+    {k:'last',o:O.svc,u:'дата ISO',get:l=>l.last}],get:S=>S.lines};
+  const SPEC={'ai-doc':COMMON,'ai-pat':COMMON.concat([PAIRS])};
+
+  function pick(spec,src,c){ const o={};
+    spec.forEach(f=>{ const x=f.get(src,c);
+      o[f.k]= !f.of? v(x) : f.list? (x||[]).map(y=>pick(f.of,y,c)) : (x? pick(f.of,x,c) : null); });
+    return o; }
+  function dict(spec,pre){ const out={};
+    spec.forEach(f=>{ const p=pre+f.k;
+      out[p]=Object.assign({origin:f.o},f.u?{unit:f.u}:{},f.m?{method:f.m}:{});
+      if(f.of) Object.assign(out,dict(f.of,p+(f.list?'[].':'.'))); });
+    return out; }
+  function buildJSON(kind,S,notes,now){
+    const c={now,notes:notes||[],recipient:REC[kind]};
+    return Object.assign(pick(SPEC[kind],S,c),{dictionary:dict(SPEC[kind],'')}); }
+
+  // ── Страница для врача ──
+  const DR_CSS=`.dr{font:13px/1.45 Georgia,'Times New Roman',serif;color:#111;background:#fff;max-width:760px;margin:0 auto;padding:16px}
+.dr h1{font-size:18px;margin:0 0 6px}.dr h2{font-size:14px;margin:14px 0 4px;border-bottom:1px solid #999}
+.dr p{margin:3px 0}.dr .draft{border:2px dashed #b00;color:#b00;padding:6px 8px;margin:6px 0;font-weight:bold}
+.dr .head{background:#f2f2f2;padding:6px 8px;margin:6px 0}.dr .muted{color:#555;font-size:11.5px}
+.dr table{width:100%;border-collapse:collapse;font-size:12px}.dr th,.dr td{border:1px solid #aaa;padding:3px 5px;text-align:right}
+.dr th:first-child,.dr td:first-child{text-align:left}.dr td.few{text-align:left;font-style:italic;color:#555}`;
+  function doctorBody(S,notes,now){
+    const e=F.esc, f=F.fmt, sg=F.sign, H=S.holds, R=S.regular;
+    let h=`<div class="dr"><h1>Сводка практики «Концентрация и дыхание»</h1>`;
+    if(DOCTOR_DRAFT) h+=`<div class="draft">Черновик: форма страницы ещё не проверена практикующим врачом.</div>`;
+    h+=`<div class="head"><p><b>Практика с ${S.since?F.date(S.since):'—'} · всего сессий: ${S.total}</b></p>
+      <p>Период сводки: ${PER[S.period]}, ${F.date(S.from)} – ${F.date(now)} · сессий за период: ${S.n}</p></div>
+      <p class="muted">Формат ${FMT} · сформировано ${F.date(now)}. ${NOTICE}</p>`;
+    h+=`<h2>Сигналы</h2>`+(S.signals.length? S.signals.map(s=>`<p>⚠ ${F.sigText(s)}</p>`).join('') : `<p>Сигналов нет.</p>`);
+    h+=`<h2>Задержки за период</h2>`+(H.holdN||H.holdOpenN
+      ? `<p>Средняя задержка: ${H.holdAvg===null?'—':f(H.holdAvg)+' с'} по ${H.holdN} полным`+(H.holdOpenN?`, ещё ${H.holdOpenN} оборваны (в среднее не входят)`:'')+`</p>
+        <p>Контакт достигнут: ${F.pct(H.contactShare)} сессий с задержками (${H.contactN} из ${H.sessions})</p>`
+      : `<p>Задержек за период нет.</p>`)+(H.noData?`<p class="muted">Без данных о задержках: ${H.noData} сесс.</p>`:'');
+    h+=`<h2>По причине и области</h2><table><tr><th>Причина · область</th><th>сессий</th><th>до</th><th>после</th><th>после − до</th><th>тенденция до</th></tr>`+
+      S.lines.map(l=>l.few
+        ? `<tr><td>${F.lineName(l)}</td><td>${l.n}</td><td class="few" colspan="4">сессий мало, средние не считаются</td></tr>`
+        : `<tr><td>${F.lineName(l)}</td><td>${l.n}</td><td>${l.preAvg===null?'—':f(l.preAvg)}</td><td>${l.postAvg===null?'—':f(l.postAvg)}</td>`+
+          `<td>${l.diff===null?'—':sg(l.diff)}</td><td>${l.trend===null?'—':sg(l.trend)+' / 30 дн.'}${l.worse?' ⚠':''}</td></tr>`).join('')+
+      `</table><p class="muted">Значения 0–10 заявлены самим человеком. «После − до» — изменение в моменте; «тенденция до» — изменение фона от сессии к сессии.</p>`;
+    h+=`<h2>Регулярность</h2><p>Сессии в ${R.days} из ${R.span} дн. (${F.pct(R.share)}) · самый длинный перерыв ${R.maxGap} дн.</p>
+      <p>Без ответа на главный вопрос: до сессии — ${F.pct(S.skipped.pre)}, после — ${F.pct(S.skipped.post)}</p>`;
+    h+=`<h2>Последние заметки (дословно)</h2>`+((notes||[]).length
+      ? notes.map(n=>`<p>${F.date(n.at)} — ${e(n.note)}</p>`).join('') : `<p>Заметок за период нет.</p>`);
+    h+=`<p class="muted">Пороги сигналов предварительные: подобраны для проверки логики и уточняются по наблюдениям.</p></div>`;
+    return h;
+  }
+  function doctorFile(S,notes,now){
+    return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Сводка практики ${day(now)}</title><style>body{margin:0;background:#fff}${DR_CSS}</style></head><body>${doctorBody(S,notes,now)}</body></html>`;
+  }
+
+  // ── Журнал и сырьё ──
+  const ORIGINS={reason:O.key,reasonCode:O.key,stated:O.stated,set:'задано настройкой',
+    measured:'измерено прибором',derived:O.calc,series:'отмечено во время сессии; rr и spo2 — измерено прибором'};
+  // примерный размер: запись ~1,2 КБ; сырьё ~10 КБ на 15 минут, с датчиком втрое больше (SPEC-record)
+  function journalSize(rows,raw){
+    let b=rows.length*1200;
+    if(raw) rows.forEach(r=>{ b+=(r.dur||0)*11*(r.device?3:1); });
+    return b; }
+  const kb=b=>b<1e6? Math.max(1,Math.round(b/1024))+' КБ' : F.fmt(Math.round(b/1048576*10)/10)+' МБ';
+  async function buildJournal(raw,now){
+    const DB=window.CB_DB;
+    const sessions=DB? (await DB.all('sessions')).sort((a,b)=>String(a.startedAt).localeCompare(String(b.startedAt))) : [];
+    const o={format:FMT,exportedAt:new Date(now).toISOString(),notice:NOTICE,kind:'journal',
+      recordFormat:'cb-record-2',includesRaw:!!raw,origins:ORIGINS,sessions};
+    if(raw) o.series=DB? await DB.all('series') : [];
+    return o; }
+
+  // ── Получатели и состав для согласия ──
+  const REC={doc:'врач','doc-file':'врач','ai-doc':'ИИ-ассистент врача','ai-pat':'ИИ пациента',journal:'тот, кому вы передадите файл'};
+  const BASE=['шапка: период, практика с первой сессии, всего сессий, строка о происхождении данных',
+    'сигналы','задержки за период','строки по причине и области: сессий, до, после, разница, тенденция',
+    'регулярность и пропуски ответов','последние заметки дословно'];
+  function content(kind,S,notes){
+    const nn=`последние заметки дословно (${(notes||[]).length})`, b=BASE.map(x=>x==='последние заметки дословно'?nn:x);
+    if(kind==='doc'||kind==='doc-file') return {what:'сводка',list:b};
+    if(kind==='ai-doc') return {what:'сводка',list:b.concat(['словарь полей: происхождение, единицы, способ расчёта'])};
+    if(kind==='ai-pat') return {what:'сводка и пары «причина + область»',list:b.concat(['по каждой паре: число сессий и средняя разница после − до',
+      'словарь полей: происхождение, единицы, способ расчёта'])};
+    return {what:'журнал',list:['все записанные сессии: ответы до и после, заметки, настройки, производные']}; }
+
+  // ── Сохранение файла ──
+  function save(name,text,type){
+    window.CB_EXPORT.last={name,text};
+    if(!window.URL||!URL.createObjectURL) return;
+    const url=URL.createObjectURL(new Blob([text],{type})), a=document.createElement('a');
+    a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL&&URL.revokeObjectURL(url),1000); }
+  function printDoctor(S,notes,now){
+    let p=$('cb-print'); if(!p){ p=document.createElement('div'); p.id='cb-print'; document.body.appendChild(p); }
+    p.innerHTML=`<style>${DR_CSS}</style>`+doctorBody(S,notes,now);
+    window.print(); }
+
+  // ── Панель выгрузки и согласие ──
+  let last=null, pending=null, idxRows=[];
+  function bar(){
+    return `<div class="stat-card" id="exp-bar"><h4>Выгрузка сводки за ${PER[last.S.period]}</h4>
+      <div class="sum-per"><button class="sum-btn" id="exp-print">🖨 Врачу — печать</button>
+      <button class="sum-btn" id="exp-html">Врачу — сохранить файл</button>
+      <button class="sum-btn" id="exp-ai-doc">ИИ-ассистенту врача (JSON)</button>
+      <button class="sum-btn" id="exp-ai-pat">ИИ пациента (JSON)</button></div>
+      <p class="sum-muted">Журнал и сырьё — отдельно: <button class="sum-btn" id="exp-journal">Журнал…</button></p>
+      <div id="exp-consent" style="display:none"></div></div>`; }
+  function consentLine(kind){
+    const S=last.S, c=content(kind,S,last.notes);
+    if(kind==='journal'){
+      const raw=$('exp-raw')&&$('exp-raw').checked;
+      return `Состав: ${raw?'журнал и сырьё (ряды)':'журнал без сырья'}, ${idxRows.length} сесс. за всё время, примерно ${kb(journalSize(idxRows,raw))} · Получатель: ${REC[kind]}`; }
+    return `Период: ${PER[S.period]}, ${F.date(S.from)} – ${F.date(Date.now())} · Состав: ${c.what} · Получатель: ${REC[kind]}`; }
+  async function ask(kind){
+    pending=kind;
+    if(kind==='journal'&&window.CB_DB) idxRows=await window.CB_DB.all('index');
+    const c=content(kind,last.S,last.notes), el=$('exp-consent');
+    el.innerHTML=`<div class="sum-demo" style="color:#c9d8e8;background:#0b131c;border-color:#2c5f95">
+      <details id="exp-details"><summary id="exp-line">${F.esc(consentLine(kind))}</summary>
+      <ul style="margin:6px 0 0 18px;font-size:12px">${c.list.map(x=>`<li>${F.esc(x)}</li>`).join('')}</ul></details>`+
+      (kind==='journal'? `<p class="sum-p"><label><input type="checkbox" id="exp-raw"> включить сырьё (ряды событий и реакции)</label></p>
+        <p class="sum-muted" id="exp-raw-warn" style="display:none">Сырьё нужно для собственного разбора; врачу обычно достаточно сводки.</p>` : '')+
+      `<p class="sum-p"><button class="sum-btn" id="exp-ok">Выгрузить</button> <button class="sum-btn" id="exp-cancel">Отмена</button></p></div>`;
+    el.style.display=''; }
+  async function run(kind){
+    const now=Date.now(), S=last.S, notes=last.notes, base=day(now);
+    if(kind==='doc') printDoctor(S,notes,now);
+    else if(kind==='doc-file') save(`svodka-${perCode(S.period)}-${base}.html`,doctorFile(S,notes,now),'text/html;charset=utf-8');
+    else if(kind==='ai-doc') save(`svodka-vrach-ii-${perCode(S.period)}-${base}.json`,JSON.stringify(buildJSON(kind,S,notes,now),null,1),'application/json');
+    else if(kind==='ai-pat') save(`svodka-pacient-ii-${perCode(S.period)}-${base}.json`,JSON.stringify(buildJSON(kind,S,notes,now),null,1),'application/json');
+    else if(kind==='journal') save(`zhurnal-${base}.json`,JSON.stringify(await buildJournal($('exp-raw')&&$('exp-raw').checked,now)),'application/json');
+  }
+  const KINDS={'exp-print':'doc','exp-html':'doc-file','exp-ai-doc':'ai-doc','exp-ai-pat':'ai-pat','exp-journal':'journal'};
+  box.addEventListener('cb-summary',e=>{
+    last=e.detail; pending=null;
+    if(last.demo||!last.S.n) return;   // пример и пустой период не выгружаются
+    box.insertAdjacentHTML('beforeend',bar());
+  });
+  box.addEventListener('click',async e=>{
+    const b=e.target.closest('button'); if(!b||!last) return;
+    if(KINDS[b.id]) return ask(KINDS[b.id]);
+    if(b.id==='exp-cancel'){ pending=null; $('exp-consent').style.display='none'; }
+    if(b.id==='exp-ok'&&pending){ const k=pending; pending=null; $('exp-consent').style.display='none'; await run(k); }
+  });
+  box.addEventListener('change',e=>{
+    if(e.target.id!=='exp-raw') return;
+    $('exp-line').textContent=consentLine('journal');
+    $('exp-raw-warn').style.display=e.target.checked?'':'none';
+  });
+
+  window.CB_EXPORT={buildJSON,doctorBody,doctorFile,buildJournal,journalSize,last:null,draft:DOCTOR_DRAFT,format:FMT,notice:NOTICE};
 })();
 
 </script>

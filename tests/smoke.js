@@ -21,6 +21,7 @@ function load(file){
     runScripts: 'dangerously', pretendToBeVisual: true, url: 'https://local/',
     beforeParse(w){
       w.print = () => {};
+      w.scrollTo = () => {};
       w.onerror = (m) => errs.push(String(m));
       w.indexedDB = indexedDB; w.IDBKeyRange = IDBKeyRange;
       w.HTMLCanvasElement.prototype.getContext = () => fakeCtx();
@@ -315,6 +316,48 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     ? ok('сводка на демонстрационных данных: строки и сигналы')
     : bad('демо: ' + JSON.stringify(dm.signals));
 
+  // З-5: выгрузка
+  const X = W.CB_EXPORT;
+  const exRows = [mk(200,'R10','Тревога',null,6,4), mk(150,'R10','Тревога',null,6,4),
+    ...[40,30,20,10,5].map(d => mk(d,'R02','Боль','heart',6,3)), mk(3,'R10','Тревога',null,7,4,{change:'усилилась'}), mk(2,'R10','Тревога',null,5,4)];
+  const S30 = SUM(exRows, NOW, 30), S90 = SUM(exRows, NOW, 90), Sall = SUM(exRows, NOW, 'all');
+  S30.since === Sall.since && S30.total === 9 && S90.total === 9 && S30.n !== Sall.n
+    ? ok('выгрузка: «практика с» и «всего» не зависят от периода')
+    : bad('since/total: ' + JSON.stringify([S30.since, Sall.since, S30.total]));
+  const dr = X.doctorBody(S30, [{at: new Date(NOW).toISOString(), note: 'тянуло <слева>'}], NOW);
+  dr.includes('Практика с') && dr.includes('всего сессий: 9') && dr.includes('30 дней')
+    && dr.includes(X.notice) && dr.includes(X.format) && dr.includes('&lt;слева&gt;')
+    && (X.draft ? dr.includes('Черновик') : !dr.includes('Черновик'))
+    ? ok('врачу: шапка, период, обязательная строка, черновик, заметка дословно')
+    : bad('страница врачу: ' + dr.slice(0, 300));
+  // каждое поле данных — в словаре с меткой происхождения
+  const leaves = (o, p, out) => {
+    if (Array.isArray(o)) o.forEach(x => leaves(x, p + '[].', out));
+    else if (o && typeof o === 'object') Object.entries(o).forEach(([k, x]) => {
+      out.add(p + k); if (x && typeof x === 'object') leaves(x, p + k + (Array.isArray(x) ? '' : '.'), out); });
+    return out; };
+  for (const kind of ['ai-doc', 'ai-pat']) {
+    const J = X.buildJSON(kind, Sall, [{at: '2026-09-30T10:00:00Z', note: 'заметка'}], NOW);
+    const {dictionary, ...data} = J;
+    const paths = [...leaves(data, '', new Set())];
+    const miss = paths.filter(p => !dictionary[p] || !dictionary[p].origin);
+    const extra = Object.keys(dictionary).filter(p => !paths.includes(p));
+    !miss.length && !extra.length && paths.length > 20
+      ? ok(`${kind}: у всех ${paths.length} полей метка происхождения, словарь без лишних полей`)
+      : bad(`${kind}: без словаря ${miss.join(',')}; лишние ${extra.join(',')}`);
+    J.format === X.format && J.notice === X.notice && J.period.code === 'all' && J.practice.total === 9
+      ? ok(`${kind}: версия формата, обязательная строка, период`)
+      : bad(`${kind}: шапка ` + JSON.stringify([J.format, J.period, J.practice]));
+  }
+  const JP = X.buildJSON('ai-pat', Sall, [], NOW), anx = JP.pairs.find(p => p.reasonCode === 'R10');
+  const JD = X.buildJSON('ai-doc', Sall, [], NOW);
+  anx && anx.n === 4 && anx.nBoth === 4 && anx.diff === -2 && anx.few === true
+    && !('pairs' in JD) && JD.lines.find(l => l.reasonCode === 'R10').diff === null
+    ? ok('ИИ пациента: средняя разница по каждой паре, и при малом числе сессий')
+    : bad('пары: ' + JSON.stringify(JP.pairs));
+  X.journalSize([{dur: 900}], true) > X.journalSize([{dur: 900}], false) + 9000
+    ? ok('журнал: сырьё увеличивает примерный размер') : bad('размер журнала не учитывает сырьё');
+
   // вкладки аналитики: открывается «Сводка», нынешняя аналитика — «Подробно»
   click(W, d.getElementById('tb-ana'));
   await wait(300);
@@ -331,6 +374,55 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   det.style.display !== 'none' && sumBox.style.display === 'none'
     ? ok('вкладка «Подробно» — нынешняя аналитика')
     : bad('вкладка «Подробно» не открылась');
+
+  // З-5: согласие и выгрузка из интерфейса
+  click(W, d.querySelector('#ana-tabs [data-tab="sum"]'));
+  await wait(300);
+  const cons = () => d.getElementById('exp-consent');
+  d.getElementById('exp-bar') ? ok('панель выгрузки под сводкой') : bad('панели выгрузки нет');
+  click(W, d.getElementById('exp-ai-doc'));
+  await wait(50);
+  const det5 = d.getElementById('exp-details');
+  cons().style.display !== 'none' && det5 && !det5.open && /Период: 90 дней.*Получатель: ИИ-ассистент врача/.test(det5.querySelector('summary').textContent)
+    && det5.querySelectorAll('li').length >= 6 && W.CB_EXPORT.last === null
+    ? ok('согласие: свёрнутый список — период, состав, получатель; до подтверждения файла нет')
+    : bad('согласие: ' + (det5 && det5.textContent.slice(0, 160)));
+  click(W, d.getElementById('exp-cancel'));
+  await wait(50);
+  cons().style.display === 'none' && W.CB_EXPORT.last === null ? ok('«Отмена» — ничего не выгружено') : bad('выгрузка после отмены');
+  click(W, d.getElementById('exp-ai-doc')); await wait(50);
+  click(W, d.getElementById('exp-ok')); await wait(100);
+  const L1 = W.CB_EXPORT.last;
+  L1 && /^svodka-vrach-ii-90d-\d{4}-\d\d-\d\d\.json$/.test(L1.name) && JSON.parse(L1.text).lines.some(l => l.reason === 'Боль')
+    ? ok('ИИ-ассистенту врача: файл с периодом в имени, данные сводки') : bad('JSON врачу-ИИ: ' + (L1 && L1.name));
+  click(W, d.querySelector('#ana-summary [data-per="30"]')); await wait(300);
+  click(W, d.getElementById('exp-ai-pat')); await wait(50);
+  click(W, d.getElementById('exp-ok')); await wait(100);
+  const L2 = W.CB_EXPORT.last;
+  L2 && /^svodka-pacient-ii-30d-/.test(L2.name) && JSON.parse(L2.text).period.code === '30' && Array.isArray(JSON.parse(L2.text).pairs)
+    ? ok('ИИ пациента: текущий период в файле и в имени') : bad('JSON ИИ пациента: ' + (L2 && L2.name));
+  click(W, d.getElementById('exp-html')); await wait(50);
+  click(W, d.getElementById('exp-ok')); await wait(100);
+  const L3 = W.CB_EXPORT.last;
+  L3 && /^svodka-30d-.*\.html$/.test(L3.name) && L3.text.startsWith('<!doctype html>') && L3.text.includes(W.CB_EXPORT.notice)
+    ? ok('врачу файлом: отдельная страница с обязательной строкой') : bad('HTML врачу: ' + (L3 && L3.name));
+  let printed = 0; W.print = () => { printed++; };
+  click(W, d.getElementById('exp-print')); await wait(50);
+  click(W, d.getElementById('exp-ok')); await wait(100);
+  const pr = d.getElementById('cb-print');
+  printed === 1 && pr && pr.parentNode === d.body && pr.textContent.includes('Практика с')
+    ? ok('врачу на печать: окно печати, страница для врача') : bad('печать: ' + printed);
+  click(W, d.getElementById('exp-journal')); await wait(200);
+  const jl = () => d.getElementById('exp-line').textContent;
+  const noRaw = jl();
+  const rawBox = d.getElementById('exp-raw');
+  rawBox && !rawBox.checked && /без сырья.*примерно \d+ КБ/.test(noRaw) ? ok('журнал: сырьё по умолчанию выключено, размер в согласии') : bad('журнал: ' + noRaw);
+  rawBox.checked = true; rawBox.dispatchEvent(new W.Event('change', {bubbles: true}));
+  /журнал и сырьё.*примерно/.test(jl()) && jl() !== noRaw ? ok('журнал: со сырьём — состав и размер меняются') : bad('журнал со сырьём: ' + jl());
+  click(W, d.getElementById('exp-ok')); await wait(300);
+  const L4 = W.CB_EXPORT.last, J4 = L4 && JSON.parse(L4.text);
+  L4 && /^zhurnal-\d{4}-\d\d-\d\d\.json$/.test(L4.name) && J4.includesRaw && J4.series.length && J4.sessions.length && J4.notice === W.CB_EXPORT.notice
+    ? ok('журнал: файл с сессиями и сырьём, обязательная строка') : bad('журнал: ' + (L4 && L4.name));
   d.getElementById('m-analytics').classList.remove('open');
 
   // Возврат из настроек
