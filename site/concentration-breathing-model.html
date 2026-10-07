@@ -1579,6 +1579,7 @@ body.hints-off .hint-mark{display:none}
       <div class="doc-flow">ВЕРХНЕЕ МЕНЮ
 ├── ⚡ Quick Start ──────────► ЭКРАН ПРИЧИН (12 причин)
 │                              ├── карточка параметров (правится на месте)
+│                              ├── ♥ Подключить пульсометр ─► состояние рядом; в сессии — строка пульса
 │                              ├── вопросы до сессии
 │                              ├── «Взять готовое и начать» ─► СЕССИЯ
 │                              ├── «Настроить под себя» ────► ЭКРАН НАСТРОЙКИ ─► СЕССИЯ
@@ -1611,6 +1612,9 @@ body.hints-off .hint-mark{display:none}
                                └── «Отмена» / Escape ──► откат значений, туда же</div>
       <p><b>Правило возврата одно:</b> из настроек человек возвращается туда, откуда их открыл. Из верхнего меню — на общий экран, из экрана причин — обратно к причинам. Сохранённое применяется до следующей правки.</p>
       <p>Плашка «Причина: … · изменить» на экране настройки и кнопка «Сохранить и провести ещё одну» после сессии — два дополнительных входа в экран причин, кроме Quick Start.</p>
+
+      <h2>Пульсометр</h2>
+      <p>На экране причин — кнопка <b>«♥ Подключить пульсометр»</b>: стандартный Bluetooth-пульсометр. Во время сессии он записывает пульс и интервалы между ударами, в сессии видна строка пульса — без порогов и цветов, только чтобы заметить, что датчик отвалился. Модель не прерывает задержку по датчику. Bluetooth работает в Chrome и Edge, только при открытии страницы напрямую — по https или из файла. Обычный пульсометр не передаёт насыщение кислородом: для него нужен пульсоксиметр. Вариабельность (RMSSD) считается с отсевом сбоев — пропущенных и лишних ударов; сырые интервалы сохраняются целиком.</p>
 
       <h2>Причина и вопросы до/после</h2>
       <p>Сессия начинается с экрана <b>«С чем пришли?»</b> — те же двенадцать причин, что и в панели причин журнала: дискомфорт, боль, острая боль, хроническая боль, воспаление, расслабление, восстановление, усталость, концентрация, тревога, интуиция, профилактика. Причина подставляет цель и режим дыхания и определяет, о чём спросят.</p>
@@ -5157,10 +5161,39 @@ document.addEventListener('keydown',e=>{
       lastHoldOpen:holdOpen.length?holdOpen[holdOpen.length-1]:false,
       contactSec, boundaryReached:b2, response:resp};
   }
+  // ВСР по интервалам датчика (З-3, Р-18). rr — [[t, мс]], t — секунды от старта.
+  // Отсев только для расчёта, сырьё целое: вне 300–2000 мс или отклонение больше 20% от медианы
+  // пяти предыдущих интервалов в диапазоне. Разности — только между соседними принятыми одной фазы.
+  function deriveHrv(rr,ev){
+    if(!Array.isArray(rr)||!rr.length) return null;
+    const r1=x=>Math.round(x*10)/10, segs=[]; let h=null;
+    (ev||[]).forEach(x=>{
+      if(x.e==='hold'){ if(h!==null) segs.push([h,x.t]); h=x.t; }
+      else if((x.e==='release'||x.e==='end')&&h!==null){ segs.push([h,x.t]); h=null; } });
+    if(h!==null) segs.push([h,Infinity]);
+    const inHold=t=>segs.some(([a,b])=>t>=a&&t<b);
+    const med=a=>{ const s=a.slice().sort((x,y)=>x-y), m=s.length>>1; return s.length%2? s[m] : (s[m-1]+s[m])/2; };
+    const recent=[], acc=[], dAll=[], dHold=[], dBreath=[], dRaw=[];
+    let prev=null;   // предыдущий интервал, если принят: {ms, hold}
+    rr.forEach(([t,ms],i)=>{
+      if(i) dRaw.push(ms-rr[i-1][1]);
+      const inRange=ms>=300&&ms<=2000;
+      const okv=inRange&&(!recent.length||Math.abs(ms-med(recent))<=0.2*med(recent));
+      if(inRange){ recent.push(ms); if(recent.length>5) recent.shift(); }
+      if(!okv){ prev=null; return; }
+      const hold=inHold(t); acc.push(ms);
+      if(prev&&prev.hold===hold){ const dd=ms-prev.ms; dAll.push(dd); (hold?dHold:dBreath).push(dd); }
+      prev={ms,hold};
+    });
+    const rms=a=>a.length>=2? r1(Math.sqrt(a.reduce((s,x)=>s+x*x,0)/a.length)) : null;
+    return {n:rr.length, artifacts:rr.length-acc.length, rmssd:rms(dAll), rmssdHold:rms(dHold), rmssdBreath:rms(dBreath),
+      rmssdRaw:rms(dRaw), hrMean:acc.length? r1(60000/(acc.reduce((s,x)=>s+x,0)/acc.length)) : null};
+  }
   // Записи без производных: считаются при чтении из series, пока сырьё есть. Исходник не меняется.
   function withDerived(r,s){
     if(!s||!Array.isArray(s.events)) return r;
-    return Object.assign({},r,{derived:Object.assign({},r.derived,derive(s.events))});
+    const d=derive(s.events), hv=deriveHrv(s.rr,s.events); if(hv) d.hrv=hv;
+    return Object.assign({},r,{derived:Object.assign({},r.derived,d)});
   }
   // Поля указателя для сводки (Р-14): производные от sessions, не новые данные. При расхождении верна sessions.
   // Оборванные задержки (holdOpen) не входят в holdN/holdSum — их длительность только нижняя граница.
@@ -5224,6 +5257,7 @@ document.addEventListener('keydown',e=>{
   };
   window.CB_DB=DB;
   window.CB_DERIVE=derive;
+  window.CB_DERIVE_HRV=deriveHrv;
   window.CB_REASON_CODES=Object.fromEntries(REASONS.map(([c,n])=>[n,c]));
   window.CB_REASON_GROUPS=Object.fromEntries(REASONS.map(([c,,,g])=>[c,g]));
 
@@ -5391,6 +5425,7 @@ document.addEventListener('keydown',e=>{
     if(!cur.reason) cur.reason=FALLBACK;
     started=Date.now(); startedPerf=performance.now(); ended=null;
     events=[{t:0,e:'start'}];
+    if(window.__cbSensor) window.__cbSensor.begin(startedPerf);   // датчик (З-3): приём только в сессии
   });
   // события этапов из слоя сессии: время в секундах от старта (З-2)
   const sinceStart=()=>Math.round((performance.now()-startedPerf)/100)/10;
@@ -5429,6 +5464,9 @@ document.addEventListener('keydown',e=>{
     (cur.preAsked||[]).forEach(k=>{ if(!(k in pre)) pre[k]='__skipped'; });
     const note=$('ps-note').value.trim();
     if(ended===null){ ended=sinceStart(); events.push({t:ended,e:'end'}); }
+    // датчик (З-3): данные до конца сессии; без отсчётов датчик в записи не числится
+    const sens=window.__cbSensor? window.__cbSensor.take(ended) : null;
+    const hv=sens? deriveHrv(sens.rr,events) : null;
     const rec={id,fmt:FMT,startedAt:new Date(started).toISOString(),
       tz:Intl.DateTimeFormat().resolvedOptions().timeZone,
       durationSec:Math.round((Date.now()-started)/1000),
@@ -5439,14 +5477,14 @@ document.addEventListener('keydown',e=>{
              ids.forEach(id=>{const e=document.getElementById(id); if(e) o[id]=+e.value;}); return o;})(),
            preset:(()=>{const p=document.querySelector('.ss-preset.sel');
              return p? {tIn:+p.dataset.in,tH1:+p.dataset.h1,tOut:+p.dataset.out,tH2:+p.dataset.h2,minutes:+p.dataset.min} : null;})()},
-      measured:{device:null,samples:0},
-      marked:{},derived:derive(events)};
+      measured:sens? {device:sens.device,samples:sens.samples} : {device:null,samples:0},
+      marked:{},derived:Object.assign(derive(events),hv? {hrv:hv} : {})};
     // сырьё: не перезаписывается и не пересчитывается; rr и spo2 появятся с датчиком (З-3)
-    const series={id,fmt:FMT,react:reactSeries(),events};
+    const series=Object.assign({id,fmt:FMT,react:reactSeries(),events},sens? {rr:sens.rr,hr:sens.hr} : {});
     const ok=await DB.putAll({sessions:rec, series,
       index:Object.assign({id,at:rec.startedAt,reason:cur.reason,reasonCode:t.code,
       area:cur.pre.area||null, areaOther:cur.pre.areaOther||null,pre:cur.pre.level??null,post:cur.post.level??null,
-      dur:rec.durationSec,device:false}, idxExtra(rec.derived,answers))});
+      dur:rec.durationSec,device:!!sens}, idxExtra(rec.derived,answers))});
     started=null; ended=null; events=[]; cur={reason:null,pre:{},post:{}};
     $('post-screen').classList.remove('on');
     document.getElementById('session-overlay').classList.remove('open');
@@ -5834,7 +5872,7 @@ document.addEventListener('keydown',e=>{
 
   // ── Журнал и сырьё ──
   const ORIGINS={reason:O.key,reasonCode:O.key,stated:O.stated,set:'задано настройкой',
-    measured:'измерено прибором',derived:O.calc,series:'отмечено во время сессии; rr и spo2 — измерено прибором'};
+    measured:'измерено прибором',derived:O.calc,series:'отмечено во время сессии; rr, hr и spo2 — измерено прибором'};
   // примерный размер: запись ~1,2 КБ; сырьё ~10 КБ на 15 минут, с датчиком втрое больше (SPEC-record)
   function journalSize(rows,raw){
     let b=rows.length*1200;
@@ -6132,6 +6170,83 @@ document.addEventListener('keydown',e=>{
   }
 
   window.CB_ARCHIVE={build,analyze,apply,preview,reminder,crc32,exportArchive,format:FMT,last:null};
+})();
+
+// ── ДАТЧИК (З-3) ────────────────────────────────────────────────────
+// Bluetooth-пульсометр, стандартный профиль Heart Rate. Без стоп-правил (Р-9):
+// датчик пишет данные, но не прерывает задержку.
+(function(){
+  const $=id=>document.getElementById(id);
+  const card=$('rs-card-box'); if(!card) return;
+
+  // Пакет heart_rate_measurement: флаги, пульс (8 или 16 бит), энергия (если есть), RR в 1/1024 с
+  function parse(v){
+    const f=v.getUint8(0); let i=1;
+    const hr=(f&1)? v.getUint16(i,true) : v.getUint8(i); i+=(f&1)? 2 : 1;
+    if(f&8) i+=2;                       // затраченная энергия — пропускаем
+    const rr=[];
+    if(f&16) for(;i+1<v.byteLength;i+=2) rr.push(v.getUint16(i,true)/1024*1000);
+    return {hr,rr};
+  }
+
+  const NOTE='Bluetooth работает в Chrome и Edge, только при открытии страницы напрямую — по https или из файла. '+
+    'Обычный пульсометр не передаёт насыщение кислородом: для него нужен пульсоксиметр.';
+  card.insertAdjacentHTML('afterend',`<div class="rs-block" id="sensor-box">
+    <button id="sensor-btn">♥ Подключить пульсометр</button> <span id="sensor-state" class="rs-note">не подключён</span>
+    <div class="rs-note" id="sensor-note">${NOTE}</div></div>`);
+  // пульс в сессии: без цветов и порогов — только видно, что датчик пишет
+  const live=document.createElement('div'); live.id='sess-hr'; live.style.display='none';
+  const timer=$('sess-hold-timer'); if(timer) timer.after(live);
+
+  let name='', on=false, seen=false, lastHr=null, buf=null;
+  const state=t=>{ $('sensor-state').textContent=t; };
+  const show=()=>{ live.textContent=on? '♥ '+(lastHr||'—') : '♥ связь потеряна'; live.style.display=seen? '' : 'none'; };
+
+  function onValue(e){
+    const p=parse(e.target.value); lastHr=p.hr||null;
+    state(`${name} · пульс ${lastHr||'—'}`); show();
+    if(!buf) return;                    // вне сессии не пишем
+    const t=Math.round((performance.now()-buf.t0)/100)/10;
+    buf.ts.push(t);
+    if(p.hr) buf.hr.push([t,p.hr]);
+    p.rr.forEach(ms=>buf.rr.push([t,Math.round(ms*10)/10]));
+  }
+  function onLost(){
+    on=false; state('связь потеряна — подключите снова'); show();
+    if(buf&&window.__cbSessEvent) window.__cbSessEvent('sensor',0);
+  }
+  async function connect(){
+    if(!navigator.bluetooth){ state('Bluetooth недоступен в этом браузере или окне. '+NOTE); return false; }
+    try{
+      state('поиск…');
+      const d=await navigator.bluetooth.requestDevice({filters:[{services:['heart_rate']}]});
+      const ch=await (await (await d.gatt.connect()).getPrimaryService('heart_rate'))
+        .getCharacteristic('heart_rate_measurement');
+      await ch.startNotifications();
+      ch.addEventListener('characteristicvaluechanged',onValue);
+      d.addEventListener('gattserverdisconnected',onLost);
+      name=d.name||'пульсометр'; on=true; seen=true; lastHr=null;
+      state(`${name} · подключён, ждём данные`); show();
+      return true;
+    }catch(err){
+      state(err&&err.name==='NotFoundError'? 'не подключён: устройство не выбрано'
+        : 'не удалось подключить: '+(err&&err.message||err)+'. '+NOTE);
+      return false;
+    }
+  }
+  $('sensor-btn').addEventListener('click',connect);
+
+  // Для слоя записи: begin — на старте сессии, take — при сохранении (данные до конца сессии)
+  window.__cbSensor={
+    begin(t0){ buf=on? {t0,ts:[],rr:[],hr:[]} : null; },
+    take(end){
+      const b=buf; buf=null; if(!b) return null;
+      const upto=x=>x[0]<=end, samples=b.ts.filter(t=>t<=end).length;
+      if(!samples) return null;
+      return {device:{name,profile:'heart_rate'},samples,rr:b.rr.filter(upto),hr:b.hr.filter(upto)};
+    }
+  };
+  window.CB_SENSOR_PARSE=parse;
 })();
 
 </script>

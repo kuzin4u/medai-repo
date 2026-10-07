@@ -9,6 +9,7 @@
 ВЕРХНЕЕ МЕНЮ
 ├── ⚡ Quick Start ──────────► ЭКРАН ПРИЧИН (12 причин)
 │                              ├── карточка параметров (правится на месте)
+│                              ├── ♥ Подключить пульсометр ─► состояние рядом; в сессии — строка пульса
 │                              ├── вопросы до сессии
 │                              ├── «Взять готовое и начать» ─► СЕССИЯ
 │                              ├── «Настроить под себя» ────► ЭКРАН НАСТРОЙКИ ─► СЕССИЯ
@@ -54,7 +55,8 @@
 `ps-again`, `rs-cancel`, `adv-cancel`, `sess-exit`, `tb-ana`,
 `ana-tabs`, `ana-summary`, `analytics-content`, `ana-det-btns`,
 `exp-bar`, `exp-print`, `exp-html`, `exp-ai-doc`, `exp-ai-pat`, `exp-journal`, `exp-consent`, `exp-details`, `exp-line`, `exp-raw`, `exp-ok`, `exp-cancel`, `cb-print`,
-`arc-box`, `arc-export`, `arc-import`, `arc-file`, `arc-preview`, `arc-counts`, `arc-settings`, `arc-ok`, `arc-cancel`, `arc-msg`, `arc-error`, `ps-archive`.
+`arc-box`, `arc-export`, `arc-import`, `arc-file`, `arc-preview`, `arc-counts`, `arc-settings`, `arc-ok`, `arc-cancel`, `arc-msg`, `arc-error`, `ps-archive`,
+`sensor-box`, `sensor-btn`, `sensor-state`, `sensor-note`, `sess-hr`.
 
 ## Границы правок
 Файл большой и слоистый. Менять точечно через `str_replace`, не переписывать блоками.

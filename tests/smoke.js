@@ -557,6 +557,85 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     ? ok('импорт из интерфейса: итог показан, дублей нет') : bad('импорт из интерфейса');
   d.getElementById('m-analytics').classList.remove('open');
 
+  // З-3: датчик
+  const pkt = (flags, hr, rrs) => { const b = [flags];
+    if (flags & 1) b.push(hr & 255, hr >> 8); else b.push(hr);
+    if (flags & 8) b.push(0x10, 0x00);
+    (rrs || []).forEach(ms => { const u = Math.round(ms * 1024 / 1000); b.push(u & 255, u >> 8); });
+    return new W.DataView(new W.Uint8Array(b).buffer); };
+  const PR = W.CB_SENSOR_PARSE, near = (a, b) => Math.abs(a - b) < 1;
+  const p1 = PR(pkt(0x10, 72, [800, 820])), p2 = PR(pkt(0x19, 260, [1000])), p3 = PR(pkt(0x00, 65));
+  p1.hr === 72 && p1.rr.length === 2 && near(p1.rr[0], 800) && near(p1.rr[1], 820)
+    && p2.hr === 260 && p2.rr.length === 1 && near(p2.rr[0], 1000) && p3.hr === 65 && !p3.rr.length
+    ? ok('датчик: разбор пакета — пульс 8 и 16 бит, поле энергии, RR')
+    : bad('разбор пакета: ' + JSON.stringify([p1, p2, p3]));
+  // ВСР: известные числа, фазы, отсев
+  const HV = W.CB_DERIVE_HRV;
+  const alt = (n, a, b, t0) => Array.from({length: n}, (_, i) => [t0 + i * 0.8, i % 2 ? b : a]);
+  const hv1 = HV(alt(20, 800, 820, 0), [{t:0,e:'start'},{t:30,e:'end'}]);
+  hv1.rmssd === 20 && hv1.artifacts === 0 && hv1.rmssdRaw === 20 && hv1.n === 20 && hv1.rmssdHold === null
+    ? ok('ВСР: RMSSD на известном ряду') : bad('RMSSD: ' + JSON.stringify(hv1));
+  const miss = alt(20, 800, 820, 0); miss.splice(10, 2, [8, 1620]);   // пропущенный удар: два интервала слились
+  const hv2 = HV(miss, [{t:0,e:'start'},{t:30,e:'end'}]);
+  hv2.rmssd === 20 && hv2.artifacts === 1 && hv2.rmssdRaw > 100
+    ? ok(`ВСР: пропущенный удар отсеян (с отсевом ${hv2.rmssd}, без — ${hv2.rmssdRaw} мс), сырьё целое`)
+    : bad('отсев: ' + JSON.stringify(hv2));
+  const ph = alt(10, 800, 820, 0).concat(alt(10, 900, 950, 10)).concat(alt(10, 800, 820, 20));
+  const hv3 = HV(ph, [{t:0,e:'start'},{t:10,e:'hold'},{t:18.5,e:'release'},{t:30,e:'end'}]);
+  hv3.rmssdHold === 50 && hv3.rmssdBreath === 20 && hv3.rmssd !== null
+    ? ok('ВСР: по фазам — в задержке и вне её, без разностей через границу') : bad('ВСР по фазам: ' + JSON.stringify(hv3));
+
+  // без Bluetooth — сообщение, а не тишина
+  click(W, d.getElementById('tb-quick'));
+  click(W, d.querySelector('[data-reason="Тревога"]'));
+  d.getElementById('sensor-btn') && d.getElementById('sensor-note').textContent.includes('Chrome и Edge')
+    && d.getElementById('sensor-note').textContent.includes('пульсоксиметр')
+    ? ok('кнопка датчика на экране причин, ограничения написаны') : bad('нет кнопки датчика или ограничений');
+  click(W, d.getElementById('sensor-btn')); await wait(50);
+  /Bluetooth недоступен/.test(d.getElementById('sensor-state').textContent)
+    ? ok('без Bluetooth — сообщение') : bad('без Bluetooth: ' + d.getElementById('sensor-state').textContent);
+
+  // поддельный пульсометр
+  let notify = null, lost = null;
+  Object.defineProperty(W.navigator, 'bluetooth', {configurable: true, value: {requestDevice: async () => ({
+    name: 'TestHR', addEventListener: (ev, fn) => { if (ev === 'gattserverdisconnected') lost = fn; },
+    gatt: {connect: async () => ({getPrimaryService: async () => ({getCharacteristic: async () => ({
+      startNotifications: async () => {}, addEventListener: (ev, fn) => { notify = fn; }})})})}})}});
+  const send = (hr, rrs) => notify({target: {value: pkt(0x10, hr, rrs)}});
+  click(W, d.getElementById('sensor-btn')); await wait(50);
+  notify && /TestHR/.test(d.getElementById('sensor-state').textContent) ? ok('пульсометр подключается, имя в состоянии') : bad('не подключился');
+  send(70, [850]);   // до старта сессии — не пишется
+  click(W, d.getElementById('rs-go')); await wait(250);
+  send(72, [800, 820]); W.__cbSessEvent('hold'); send(74, [810]); W.__cbSessEvent('release'); send(73, [830]);
+  d.getElementById('sess-hr').textContent === '♥ 73' && d.getElementById('sess-hr').style.display !== 'none'
+    ? ok('пульс на экране сессии') : bad('строка пульса: ' + d.getElementById('sess-hr').textContent);
+  lost();
+  d.getElementById('sess-hr').textContent.includes('связь потеряна') ? ok('потеря связи видна в сессии') : bad('потеря связи не видна');
+  click(W, d.getElementById('sess-exit')); await wait(250);
+  click(W, d.getElementById('ps-save')); await wait(350);
+  const sesAll = await W.CB_DB.raw('sessions');
+  const sr3 = sesAll.filter(x => x.reason === 'Тревога' && x.measured && x.measured.device).pop();
+  const se3 = sr3 && (await W.CB_DB.getMany('series', [sr3.id]))[sr3.id];
+  const ix3 = sr3 && (await W.CB_DB.getMany('index', [sr3.id]))[sr3.id];
+  sr3 && sr3.measured.device.name === 'TestHR' && sr3.measured.samples === 3 && se3 && se3.rr.length === 4
+    && se3.rr.every(x => typeof x[0] === 'number' && x[1] > 300) && se3.hr.length === 3 && ix3.device === true
+    ? ok('с датчиком: measured.device заполнен, samples > 0, в series.rr есть значения')
+    : bad('запись с датчиком: ' + JSON.stringify([sr3 && sr3.measured, se3 && se3.rr]));
+  se3 && !se3.rr.some(x => near(x[1], 850)) ? ok('до старта сессии интервалы не пишутся') : bad('записаны интервалы до старта');
+  se3 && se3.events.some(x => x.e === 'sensor' && x.v === 0) ? ok('потеря связи — событие sensor в series.events') : bad('нет события потери связи');
+  sr3 && sr3.derived.hrv && sr3.derived.hrv.n === 4 && sr3.derived.hrv.hrMean > 0
+    ? ok('derived.hrv записан при сохранении') : bad('derived.hrv: ' + JSON.stringify(sr3 && sr3.derived.hrv));
+  // связь потеряна до старта — сессия без датчика
+  click(W, d.getElementById('tb-quick'));
+  click(W, d.querySelector('[data-reason="Тревога"]'));
+  click(W, d.getElementById('rs-go')); await wait(250);
+  click(W, d.getElementById('sess-exit')); await wait(250);
+  click(W, d.getElementById('ps-save')); await wait(350);
+  const sr4 = (await W.CB_DB.raw('sessions')).filter(x => x.startedAt).sort((a, b) => a.startedAt < b.startedAt ? -1 : 1).pop();
+  const se4 = (await W.CB_DB.getMany('series', [sr4.id]))[sr4.id];
+  sr4.measured.device === null && sr4.measured.samples === 0 && !('rr' in se4) && !sr4.derived.hrv
+    ? ok('без отсчётов датчика: device null, rr нет') : bad('сессия без датчика: ' + JSON.stringify(sr4.measured));
+
   // Возврат из настроек
   click(W, d.getElementById('tb-set'));
   click(W, d.querySelector('#tb-drop [data-set="adv"]'));
