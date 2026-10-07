@@ -1642,7 +1642,7 @@ body.hints-off .hint-mark{display:none}
       <h2>Аналитика</h2>
       <p>Две вкладки. <b>Сводка</b> — за 30 дней, 90 дней (по умолчанию) или всё время: сигналы, средняя задержка и доля сессий с контактом, строки по причине и области (до, после, разница, тенденция значения до), регулярность, пропуски ответов, последние заметки. Меньше 5 сессий в строке — средние не показываются. Пороги сигналов предварительные: подобраны для проверки логики и уточняются по наблюдениям. При пустом журнале сводку можно посмотреть на примере — пример в журнал не записывается.</p>
       <p>Под сводкой — <b>выгрузка</b> того же периода: врачу на печать или файлом, ИИ-ассистенту врача и ИИ пациента файлом JSON. Перед каждой выгрузкой — согласие: период, состав, получатель. Журнал и сырьё — отдельной кнопкой и отдельным согласием, с примерным размером файла.</p>
-      <p><b>Архив</b> — там же, ниже: все записи и сырьё как есть плюс настройки, файл для вас самих — переезд на другое устройство, резервная копия. Импорт сначала показывает, сколько записей добавится и сколько совпадёт; одинаковые не дублируются, различающиеся сохраняются обе, копия с пометкой. Настройки восстанавливаются только по отдельному флажку. Напоминание — раз в месяц, а пока архива не было, ещё после каждой десятой сессии.</p>
+      <p><b>Архив</b> — там же, ниже: все записи и сырьё как есть, старые журналы, плюс настройки, файл для вас самих — переезд на другое устройство, резервная копия. Импорт сначала показывает, сколько записей добавится и сколько совпадёт; одинаковые не дублируются, различающиеся сохраняются обе, копия с пометкой. Настройки восстанавливаются только по отдельному флажку. Напоминание — раз в месяц, а пока архива не было, ещё после каждой десятой сессии.</p>
       <p><b>Подробно</b> — корреляции латентности с параметрами, диаграмма рассеяния, журнал причин, гистограммы по органам и причинам, тепловая карта по часам суток. Экспорт в CSV.</p>
       <p>Нажатие на точку диаграммы показывает все параметры измерения.</p>
 
@@ -5940,6 +5940,8 @@ document.addEventListener('keydown',e=>{
   const FMT='cb-archive-1', DAY=864e5;
   const STORES=['index','sessions','series'];
   const SETTINGS_KEYS=['cb_settings_v1','cb_hints_off','organTargets'];
+  // старые журналы в localStorage: данные владельца, восстанавливаются вместе с записями (Р-17)
+  const LEGACY_KEYS=['sessionLog_v1','latencyLog_v1','fbSessions_v1'];
   const LAST_KEY='cb_archive_v1';   // дата последнего архива; не входит в настройки архива (З-7 опирается на неё)
   let pending=null, msg='';         // разобранный архив до подтверждения; строка итога в блоке «Архив»
 
@@ -5958,10 +5960,12 @@ document.addEventListener('keydown',e=>{
 
   async function build(now){
     const stores={}; for(const s of STORES) stores[s]=await DB.raw(s);
-    const keys={}; SETTINGS_KEYS.forEach(k=>{ let v=null; try{ v=localStorage.getItem(k); }catch(e){} keys[k]=v; });
+    const ls=list=>{ const o={}; list.forEach(k=>{ let v=null; try{ v=localStorage.getItem(k); }catch(e){} o[k]=v; }); return o; };
+    const keys=ls(SETTINGS_KEYS), legacy=ls(LEGACY_KEYS);
     return {format:FMT,createdAt:new Date(now).toISOString(),dbVersion:1,
       records:{counts:Object.fromEntries(STORES.map(s=>[s,stores[s].length])),crc:crc32(JSON.stringify(stores)),stores},
-      settings:{crc:crc32(JSON.stringify(keys)),keys}};
+      settings:{crc:crc32(JSON.stringify(keys)),keys},
+      legacy:{crc:crc32(JSON.stringify(legacy)),keys:legacy}};
   }
 
   // Разбор архива: сколько добавится, совпадёт, различается. В базу ничего не пишет.
@@ -5973,7 +5977,7 @@ document.addEventListener('keydown',e=>{
     const inc={}; STORES.forEach(s=>(S[s]||[]).forEach(r=>{ (inc[r.id]=inc[r.id]||{})[s]=r; }));
     const at=new Date(now||Date.now()).toISOString();
     const strip=r=>{ if(!r) return null; const o=Object.assign({},r); delete o.id; delete o.importedConflict; return o; };
-    const P={add:[],match:[],conflict:[],put:{index:[],sessions:[],series:[]},settings:null,settingsError:null};
+    const P={add:[],match:[],conflict:[],put:{index:[],sessions:[],series:[]},settings:null,settingsError:null,legacy:{},legacyNotes:[]};
     Object.entries(inc).forEach(([id,rec])=>{
       if(STORES.every(s=>!cur[s][id])){ P.add.push(id); STORES.forEach(s=>{ if(rec[s]) P.put[s].push(rec[s]); }); return; }
       if(STORES.every(s=>canon(cur[s][id]||null)===canon(rec[s]||null))){ P.match.push(id); return; }
@@ -5989,11 +5993,34 @@ document.addEventListener('keydown',e=>{
       if(A.settings.keys&&crc32(JSON.stringify(A.settings.keys))===A.settings.crc) P.settings=A.settings.keys;
       else P.settingsError='Часть с настройками повреждена — настройки не восстанавливаются, записи можно импортировать.';
     }
+    if(A.legacy){
+      if(A.legacy.keys&&crc32(JSON.stringify(A.legacy.keys))===A.legacy.crc) mergeLegacy(A.legacy.keys,P);
+      else P.legacyNotes.push('Часть со старыми журналами повреждена — журналы не восстанавливаются, записи можно импортировать.');
+    }
     return P;
   }
-  // Записи — всегда и одной транзакцией; настройки — только по отдельному согласию
+  // Старые журналы: объединение по элементам с учётом повторов — одинаковые не дублируются,
+  // новые дописываются в конец; журнал устройства, который не читается как массив, не трогается
+  function mergeLegacy(keys,P){
+    const parse=t=>{ try{ return JSON.parse(t); }catch(e){ return undefined; } };
+    LEGACY_KEYS.forEach(k=>{
+      const t=keys[k]; if(t===null||t===undefined) return;
+      const arc=parse(t);
+      if(!Array.isArray(arc)){ P.legacyNotes.push(`Журнал ${k} в архиве не читается — пропущен.`); return; }
+      let devT=null; try{ devT=localStorage.getItem(k); }catch(e){}
+      const dev=devT===null? [] : parse(devT);
+      if(!Array.isArray(dev)){ P.legacyNotes.push(`Журнал ${k} на устройстве не читается — не тронут.`); return; }
+      const have={}; dev.forEach(x=>{ const c=canon(x); have[c]=(have[c]||0)+1; });
+      const add=arc.filter(x=>{ const c=canon(x); if(have[c]){ have[c]--; return false; } return true; });
+      // журнала на устройстве не было — строка из архива как есть
+      P.legacy[k]={add:add.length,match:arc.length-add.length,
+        value:devT===null? t : add.length? JSON.stringify(dev.concat(add)) : null};
+    });
+  }
+  // Записи и старые журналы — всегда; записи одной транзакцией; настройки — только по отдельному согласию
   async function apply(P,withSettings){
     const ok=await DB.putMany(P.put);
+    if(ok) Object.entries(P.legacy||{}).forEach(([k,L])=>{ if(L.value!==null) try{ localStorage.setItem(k,L.value); }catch(e){} });
     let set=false;
     if(ok&&withSettings&&P.settings){
       Object.entries(P.settings).forEach(([k,v])=>{ try{ v===null? localStorage.removeItem(k) : localStorage.setItem(k,v); }catch(e){} });
@@ -6039,9 +6066,10 @@ document.addEventListener('keydown',e=>{
       `<div class="sum-per"><button class="sum-btn" id="arc-export">Выгрузить архив</button>
       <button class="sum-btn" id="arc-import">Импортировать…</button>
       <input type="file" id="arc-file" accept=".json,application/json" style="display:none"></div>
-      <p class="sum-muted">Архив — все записи и сырьё как есть, плюс настройки отдельной частью. Он для вас самих: переезд на другое устройство, резервная копия.</p>
+      <p class="sum-muted">Архив — все записи и сырьё как есть, старые журналы, плюс настройки отдельной частью. Он для вас самих: переезд на другое устройство, резервная копия.</p>
       <div id="arc-preview" style="display:none"></div>`+(msg? `<p class="sum-p" id="arc-msg">${F.esc(msg)}</p>` : '')+`</div>`;
   }
+  const legacyAdd=P=>Object.values(P.legacy).reduce((s,L)=>s+L.add,0);
   async function preview(text){
     let A=null; try{ A=JSON.parse(text); }catch(e){}
     const P=await analyze(A,Date.now()), el=$('arc-preview');
@@ -6050,6 +6078,8 @@ document.addEventListener('keydown',e=>{
       ? `<p class="sum-p" id="arc-error">${F.esc(P.error)}</p><p class="sum-p"><button class="sum-btn" id="arc-cancel">Закрыть</button></p>`
       : `<p class="sum-p" id="arc-counts">Добавится: <b>${P.add.length}</b> · совпадёт: <b>${P.match.length}</b> · различаются: <b>${P.conflict.length}</b>`+
         (P.conflict.length? ' (сохранятся обе, копия с пометкой)' : '')+`</p>`+
+        (Object.keys(P.legacy).length? `<p class="sum-p" id="arc-legacy">Старые журналы: добавится <b>${legacyAdd(P)}</b> элем., совпадёт ${Object.values(P.legacy).reduce((s,L)=>s+L.match,0)}</p>` : '')+
+        P.legacyNotes.map(t=>`<p class="sum-muted">${F.esc(t)}</p>`).join('')+
         (P.settings? `<p class="sum-p"><label><input type="checkbox" id="arc-settings"> восстановить настройки из архива</label></p>
           <p class="sum-muted">По умолчанию остаются настройки этого устройства — на новом они могут быть уже свои.</p>` : '')+
         (P.settingsError? `<p class="sum-muted">${F.esc(P.settingsError)}</p>` : '')+
@@ -6076,6 +6106,7 @@ document.addEventListener('keydown',e=>{
       const P=pending, ws=!!($('arc-settings')&&$('arc-settings').checked); pending=null;
       const r=await apply(P,ws);
       msg=r.ok? `Импортировано: добавлено ${P.add.length}, совпало ${P.match.length}, копий с пометкой ${P.conflict.length}.`+
+        (Object.keys(P.legacy).length? ` Старые журналы: добавлено ${legacyAdd(P)} элем.` : '')+
         (r.settings? ' Настройки восстановлены — применятся после перезагрузки страницы.' : '')
         : 'Импорт не удался — база не изменилась.';
       if(window.__cbSummaryRender) window.__cbSummaryRender();

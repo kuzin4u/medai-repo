@@ -443,6 +443,12 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     series: []});
   W.localStorage.setItem('cb_settings_v1', JSON.stringify({sliders: {'t-in': '4'}, select: {}}));
   W.localStorage.setItem('cb_hints_off', '1');
+  // старые журналы, в том числе с повторяющимися элементами
+  const LEG = ['sessionLog_v1', 'latencyLog_v1', 'fbSessions_v1'];
+  W.localStorage.setItem('sessionLog_v1', JSON.stringify([{ts: 1, organ: 'heart', note: 'а'}, {ts: 1, organ: 'heart', note: 'а'}, {ts: 2, organ: 'brain', note: 'б'}]));
+  W.localStorage.setItem('latencyLog_v1', JSON.stringify([{ts: 3, contactLatency: 4.2}]));
+  W.localStorage.setItem('fbSessions_v1', JSON.stringify([{duration: 61.5, track: [1, 2, 3]}]));
+  const legBefore = LEG.map(k => W.localStorage.getItem(k));
   const setBefore = W.localStorage.getItem('cb_settings_v1');
   const before = await snap();
   const raw1 = before.sessions.find(r => r.id === 'ARC1');
@@ -457,6 +463,7 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     : bad('состав архива: ' + Object.keys(arc()).join(','));
   await clearDB();
   W.localStorage.removeItem('cb_settings_v1'); W.localStorage.setItem('cb_hints_off', '0');
+  LEG.forEach(k => W.localStorage.removeItem(k));
   (await count()) === '0/0/0' ? ok('база очищена') : bad('база не очищена: ' + await count());
   const P1 = await AR.analyze(arc(), Date.now());
   const ids = new Set(STO.flatMap(s => before[s].map(r => r.id)));
@@ -470,12 +477,16 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
         + ' ' + JSON.stringify(STO.flatMap(s => before[s].filter((r, i) => !same(r, after[s][i])).map(r => r.id))));
   W.localStorage.getItem('cb_settings_v1') === null && W.localStorage.getItem('cb_hints_off') === '0'
     ? ok('без согласия настройки устройства не меняются') : bad('настройки изменились без согласия');
+  LEG.every((k, i) => W.localStorage.getItem(k) === legBefore[i])
+    ? ok('круговая проверка: старые журналы восстановлены вместе с записями, строка в строку')
+    : bad('старые журналы: ' + LEG.map(k => W.localStorage.getItem(k)).join(' | '));
   // повторный импорт — без дублей
   const P2 = await AR.analyze(arc(), Date.now());
   const cnt1 = await count();
   await AR.apply(P2, true);
   !P2.add.length && !P2.conflict.length && P2.match.length === ids.size && (await count()) === cnt1
-    ? ok('повторный импорт: всё совпало, дублей нет') : bad('повторный импорт: ' + JSON.stringify([P2.add.length, P2.match.length, P2.conflict.length]));
+    && LEG.every((k, i) => W.localStorage.getItem(k) === legBefore[i]) && Object.values(P2.legacy).every(L => !L.add)
+    ? ok('повторный импорт: всё совпало, дублей нет ни в записях, ни в журналах') : bad('повторный импорт: ' + JSON.stringify([P2.add.length, P2.match.length, P2.conflict.length]));
   W.localStorage.getItem('cb_settings_v1') === setBefore && W.localStorage.getItem('cb_hints_off') === '1'
     ? ok('с согласием настройки совпадают с архивом') : bad('настройки не восстановлены');
   // та же id, другое содержимое — обе с пометкой; повторно — без новой копии
@@ -504,6 +515,21 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   const P6 = await AR.analyze(A6, Date.now());
   !P6.error && !P6.settings && P6.settingsError
     ? ok('повреждённые настройки: записи импортируются, настройки — нет') : bad('повреждение настроек: ' + JSON.stringify(P6.settingsError));
+  // старые журналы: свои элементы устройства сохраняются рядом с архивными
+  W.localStorage.setItem('sessionLog_v1', JSON.stringify([{ts: 9, organ: 'solar', note: 'своё'}, {ts: 1, organ: 'heart', note: 'а'}]));
+  W.localStorage.setItem('latencyLog_v1', '{не массив');
+  const P7 = await AR.analyze(arc(), Date.now());
+  await AR.apply(P7, false);
+  const sl = JSON.parse(W.localStorage.getItem('sessionLog_v1'));
+  sl.length === 4 && sl[0].note === 'своё' && sl.filter(x => x.note === 'а').length === 2 && P7.legacy.sessionLog_v1.add === 2
+    && W.localStorage.getItem('latencyLog_v1') === '{не массив' && P7.legacyNotes.some(t => /latencyLog_v1.*не тронут/.test(t))
+    ? ok('журналы: свои элементы устройства сохранены, нечитаемый журнал не тронут')
+    : bad('объединение журналов: ' + JSON.stringify([sl, P7.legacyNotes]));
+  const A8 = arc(); A8.legacy.keys.fbSessions_v1 = '[]';
+  const P8 = await AR.analyze(A8, Date.now());
+  !P8.error && !Object.keys(P8.legacy).length && P8.legacyNotes.some(t => /повреждена/.test(t))
+    ? ok('повреждённые журналы: записи импортируются, журналы — нет') : bad('повреждение журналов: ' + JSON.stringify(P8.legacyNotes));
+  LEG.forEach((k, i) => W.localStorage.setItem(k, legBefore[i]));
   // напоминание
   const RN = Date.now(), rm = AR.reminder;
   /10 сессий/.test(rm(RN, 10, RN - 5*DAY, null)) && rm(RN, 11, RN - 5*DAY, null) === null
