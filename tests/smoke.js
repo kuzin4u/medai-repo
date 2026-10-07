@@ -45,6 +45,15 @@ function load(file){
 }
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbles:true}));
+// ожидание условия вместо фиксированной паузы: перерисовка и запись в базу асинхронны
+const until = async (cond, ms = 3000) => {
+  for (const t0 = Date.now(); Date.now() - t0 < ms; await wait(25)) { try { if (cond()) return true; } catch (e) {} }
+  try { return !!cond(); } catch (e) { return false; } };
+// сводка перерисована заново: метка внутри #ana-summary пропала, блок «Архив» (дорисовывается последним) на месте
+const fresh = async (d, act) => {
+  d.getElementById('ana-summary').insertAdjacentHTML('beforeend', '<i id="t-stale"></i>');
+  await act();
+  return until(() => !d.getElementById('t-stale') && d.getElementById('arc-box')); };
 
 (async () => {
   // 1. Синтаксис скриптов во всех файлах
@@ -110,7 +119,7 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   click(W, d.querySelector('[data-q="pre:area"][data-v="heart"]'));
   click(W, d.querySelector('[data-q="pre:level"][data-v="7"]'));
   click(W, d.getElementById('rs-go'));
-  await wait(250);
+  await wait(250);   // не перерисовка: проверка ряда реакции ниже рассчитана на сессию, идущую ~250 мс
   d.getElementById('session-live').classList.contains('on') ? ok('сессия запускается') : bad('сессия не запустилась');
 
   // Процесс шёл параллельно: точка до сессии отбрасывается, внутри секунды остаётся последняя
@@ -119,11 +128,11 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   W.__cbFbTrack = () => ({start: fbStart, track: [{t:1.0, v:99}, {t:1.9, v:10}, {t:1.95, v:20}]});
   W.__cbSessEvent('hold'); W.__cbSessEvent('contact'); W.__cbSessEvent('release');
   click(W, d.getElementById('sess-exit'));
-  await wait(250);
+  await until(() => d.getElementById('post-screen').classList.contains('on'));
   d.getElementById('post-screen').classList.contains('on') ? ok('экран вопросов после сессии') : bad('нет экрана после сессии');
   click(W, d.querySelector('[data-q="post:level"][data-v="3"]'));
   click(W, d.getElementById('ps-save'));
-  await wait(350);
+  await until(() => !d.getElementById('post-screen').classList.contains('on'));
   const idx = await W.CB_DB.all('index');
   const ses = await W.CB_DB.all('sessions');
   idx.length && ses.length ? ok('запись сохранена в указатель и сессии') : bad('запись не сохранилась');
@@ -174,11 +183,11 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   click(W, d.getElementById('tb-quick'));
   click(W, d.querySelector('[data-reason="Тревога"]'));
   click(W, d.getElementById('rs-go'));
-  await wait(250);
+  await until(() => d.getElementById('session-live').classList.contains('on'));
   d.getElementById('session-live').classList.contains('on') ? ok('вторая сессия запускается') : bad('вторая сессия не запустилась');
-  esc(); await wait(250);
+  esc(); await until(() => d.getElementById('post-screen').classList.contains('on'));
   d.getElementById('post-screen').classList.contains('on') ? ok('Escape в сессии открывает экран после') : bad('Escape не открыл экран после');
-  esc(); await wait(350);
+  esc(); await until(() => !d.getElementById('post-screen').classList.contains('on'));
   const esr = (await W.CB_DB.all('sessions')).find(x => x.reason === 'Тревога' && x.fmt === 'cb-record-2');
   const esi = (await W.CB_DB.all('index')).find(x => esr && x.id === esr.id);
   esr && esr.stated.postSkipped === true ? ok('Escape на экране после записывает сессию как пропуск') : bad('сессия после Escape не записана');
@@ -359,8 +368,7 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     ? ok('журнал: сырьё увеличивает примерный размер') : bad('размер журнала не учитывает сырьё');
 
   // вкладки аналитики: открывается «Сводка», нынешняя аналитика — «Подробно»
-  click(W, d.getElementById('tb-ana'));
-  await wait(300);
+  await fresh(d, () => click(W, d.getElementById('tb-ana')));
   const sumBox = d.getElementById('ana-summary');
   const det = d.getElementById('analytics-content');
   sumBox.style.display !== 'none' && det.style.display === 'none'
@@ -376,50 +384,51 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     : bad('вкладка «Подробно» не открылась');
 
   // З-5: согласие и выгрузка из интерфейса
-  click(W, d.querySelector('#ana-tabs [data-tab="sum"]'));
-  await wait(300);
+  await fresh(d, () => click(W, d.querySelector('#ana-tabs [data-tab="sum"]')));
   const cons = () => d.getElementById('exp-consent');
+  const shown = () => cons().style.display !== 'none';
+  // выгрузка через согласие: дождаться экрана согласия, подтвердить, дождаться результата
+  const exportVia = async (id, done) => { const prev = W.CB_EXPORT.last;
+    click(W, d.getElementById(id)); await until(shown);
+    click(W, d.getElementById('exp-ok')); await until(done || (() => W.CB_EXPORT.last !== prev)); };
   d.getElementById('exp-bar') ? ok('панель выгрузки под сводкой') : bad('панели выгрузки нет');
   click(W, d.getElementById('exp-ai-doc'));
-  await wait(50);
+  await until(shown);
   const det5 = d.getElementById('exp-details');
   cons().style.display !== 'none' && det5 && !det5.open && /Период: 90 дней.*Получатель: ИИ-ассистент врача/.test(det5.querySelector('summary').textContent)
     && det5.querySelectorAll('li').length >= 6 && W.CB_EXPORT.last === null
     ? ok('согласие: свёрнутый список — период, состав, получатель; до подтверждения файла нет')
     : bad('согласие: ' + (det5 && det5.textContent.slice(0, 160)));
   click(W, d.getElementById('exp-cancel'));
-  await wait(50);
+  await until(() => !shown());
   cons().style.display === 'none' && W.CB_EXPORT.last === null ? ok('«Отмена» — ничего не выгружено') : bad('выгрузка после отмены');
-  click(W, d.getElementById('exp-ai-doc')); await wait(50);
-  click(W, d.getElementById('exp-ok')); await wait(100);
+  await exportVia('exp-ai-doc');
   const L1 = W.CB_EXPORT.last;
   L1 && /^svodka-vrach-ii-90d-\d{4}-\d\d-\d\d\.json$/.test(L1.name) && JSON.parse(L1.text).lines.some(l => l.reason === 'Боль')
     ? ok('ИИ-ассистенту врача: файл с периодом в имени, данные сводки') : bad('JSON врачу-ИИ: ' + (L1 && L1.name));
-  click(W, d.querySelector('#ana-summary [data-per="30"]')); await wait(300);
-  click(W, d.getElementById('exp-ai-pat')); await wait(50);
-  click(W, d.getElementById('exp-ok')); await wait(100);
+  await fresh(d, () => click(W, d.querySelector('#ana-summary [data-per="30"]')));
+  await exportVia('exp-ai-pat');
   const L2 = W.CB_EXPORT.last;
   L2 && /^svodka-pacient-ii-30d-/.test(L2.name) && JSON.parse(L2.text).period.code === '30' && Array.isArray(JSON.parse(L2.text).pairs)
     ? ok('ИИ пациента: текущий период в файле и в имени') : bad('JSON ИИ пациента: ' + (L2 && L2.name));
-  click(W, d.getElementById('exp-html')); await wait(50);
-  click(W, d.getElementById('exp-ok')); await wait(100);
+  await exportVia('exp-html');
   const L3 = W.CB_EXPORT.last;
   L3 && /^svodka-30d-.*\.html$/.test(L3.name) && L3.text.startsWith('<!doctype html>') && L3.text.includes(W.CB_EXPORT.notice)
     ? ok('врачу файлом: отдельная страница с обязательной строкой') : bad('HTML врачу: ' + (L3 && L3.name));
   let printed = 0; W.print = () => { printed++; };
-  click(W, d.getElementById('exp-print')); await wait(50);
-  click(W, d.getElementById('exp-ok')); await wait(100);
+  await exportVia('exp-print', () => printed === 1);
   const pr = d.getElementById('cb-print');
   printed === 1 && pr && pr.parentNode === d.body && pr.textContent.includes('Практика с')
     ? ok('врачу на печать: окно печати, страница для врача') : bad('печать: ' + printed);
-  click(W, d.getElementById('exp-journal')); await wait(200);
+  click(W, d.getElementById('exp-journal')); await until(() => shown() && d.getElementById('exp-raw'));
   const jl = () => d.getElementById('exp-line').textContent;
   const noRaw = jl();
   const rawBox = d.getElementById('exp-raw');
   rawBox && !rawBox.checked && /без сырья.*примерно \d+ КБ/.test(noRaw) ? ok('журнал: сырьё по умолчанию выключено, размер в согласии') : bad('журнал: ' + noRaw);
   rawBox.checked = true; rawBox.dispatchEvent(new W.Event('change', {bubbles: true}));
   /журнал и сырьё.*примерно/.test(jl()) && jl() !== noRaw ? ok('журнал: со сырьём — состав и размер меняются') : bad('журнал со сырьём: ' + jl());
-  click(W, d.getElementById('exp-ok')); await wait(300);
+  const prevJ = W.CB_EXPORT.last;
+  click(W, d.getElementById('exp-ok')); await until(() => W.CB_EXPORT.last !== prevJ);
   const L4 = W.CB_EXPORT.last, J4 = L4 && JSON.parse(L4.text);
   L4 && /^zhurnal-\d{4}-\d\d-\d\d\.json$/.test(L4.name) && J4.includesRaw && J4.series.length && J4.sessions.length && J4.notice === W.CB_EXPORT.notice
     ? ok('журнал: файл с сессиями и сырьём, обязательная строка') : bad('журнал: ' + (L4 && L4.name));
@@ -538,21 +547,21 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     ? ok('напоминание: каждая десятая без архива, раз в месяц') : bad('напоминание');
   // интерфейс: выгрузка архива и импорт через разбор
   W.localStorage.removeItem('cb_archive_v1');
-  await W.__cbSummaryRender(); await wait(200);
+  await fresh(d, () => W.__cbSummaryRender());
   d.getElementById('arc-box') && d.getElementById('arc-box').textContent.includes('Архив ещё не делался')
     ? ok('блок «Архив» под выгрузкой') : bad('блока «Архив» нет');
-  click(W, d.getElementById('arc-export')); await wait(300);
+  await fresh(d, () => click(W, d.getElementById('arc-export')));
   const AL = AR.last;
   AL && /^arhiv-\d{4}-\d\d-\d\d\.json$/.test(AL.name) && W.localStorage.getItem('cb_archive_v1')
     && d.getElementById('arc-box').textContent.includes('Последний архив')
     ? ok('архив выгружается из интерфейса, дата архива запомнена') : bad('выгрузка архива: ' + (AL && AL.name));
-  await AR.preview(AL.text); await wait(50);
+  await AR.preview(AL.text);
   const cnt7 = await count();
   /Добавится: 0.*совпадёт: \d+/.test(d.getElementById('arc-counts').textContent) && d.getElementById('arc-settings')
     && !d.getElementById('arc-settings').checked
     ? ok('перед импортом: сколько добавится и совпадёт, настройки — отдельный флажок, выключен')
     : bad('предпросмотр импорта: ' + d.getElementById('arc-preview').textContent);
-  click(W, d.getElementById('arc-ok')); await wait(400);
+  await fresh(d, () => click(W, d.getElementById('arc-ok')));
   (await count()) === cnt7 && /Импортировано/.test(d.getElementById('arc-box').textContent)
     ? ok('импорт из интерфейса: итог показан, дублей нет') : bad('импорт из интерфейса');
   d.getElementById('m-analytics').classList.remove('open');
@@ -591,7 +600,8 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   d.getElementById('sensor-btn') && d.getElementById('sensor-note').textContent.includes('Chrome и Edge')
     && d.getElementById('sensor-note').textContent.includes('пульсоксиметр')
     ? ok('кнопка датчика на экране причин, ограничения написаны') : bad('нет кнопки датчика или ограничений');
-  click(W, d.getElementById('sensor-btn')); await wait(50);
+  click(W, d.getElementById('sensor-btn'));
+  await until(() => /Bluetooth недоступен/.test(d.getElementById('sensor-state').textContent));
   /Bluetooth недоступен/.test(d.getElementById('sensor-state').textContent)
     ? ok('без Bluetooth — сообщение') : bad('без Bluetooth: ' + d.getElementById('sensor-state').textContent);
 
@@ -602,17 +612,18 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
     gatt: {connect: async () => ({getPrimaryService: async () => ({getCharacteristic: async () => ({
       startNotifications: async () => {}, addEventListener: (ev, fn) => { notify = fn; }})})})}})}});
   const send = (hr, rrs) => notify({target: {value: pkt(0x10, hr, rrs)}});
-  click(W, d.getElementById('sensor-btn')); await wait(50);
+  click(W, d.getElementById('sensor-btn'));
+  await until(() => notify && /TestHR/.test(d.getElementById('sensor-state').textContent));
   notify && /TestHR/.test(d.getElementById('sensor-state').textContent) ? ok('пульсометр подключается, имя в состоянии') : bad('не подключился');
   send(70, [850]);   // до старта сессии — не пишется
-  click(W, d.getElementById('rs-go')); await wait(250);
+  click(W, d.getElementById('rs-go')); await until(() => d.getElementById('session-live').classList.contains('on'));
   send(72, [800, 820]); W.__cbSessEvent('hold'); send(74, [810]); W.__cbSessEvent('release'); send(73, [830]);
   d.getElementById('sess-hr').textContent === '♥ 73' && d.getElementById('sess-hr').style.display !== 'none'
     ? ok('пульс на экране сессии') : bad('строка пульса: ' + d.getElementById('sess-hr').textContent);
   lost();
   d.getElementById('sess-hr').textContent.includes('связь потеряна') ? ok('потеря связи видна в сессии') : bad('потеря связи не видна');
-  click(W, d.getElementById('sess-exit')); await wait(250);
-  click(W, d.getElementById('ps-save')); await wait(350);
+  click(W, d.getElementById('sess-exit')); await until(() => d.getElementById('post-screen').classList.contains('on'));
+  click(W, d.getElementById('ps-save')); await until(() => !d.getElementById('post-screen').classList.contains('on'));
   const sesAll = await W.CB_DB.raw('sessions');
   const sr3 = sesAll.filter(x => x.reason === 'Тревога' && x.measured && x.measured.device).pop();
   const se3 = sr3 && (await W.CB_DB.getMany('series', [sr3.id]))[sr3.id];
@@ -628,9 +639,9 @@ const click = (W, el) => el && el.dispatchEvent(new W.MouseEvent('click', {bubbl
   // связь потеряна до старта — сессия без датчика
   click(W, d.getElementById('tb-quick'));
   click(W, d.querySelector('[data-reason="Тревога"]'));
-  click(W, d.getElementById('rs-go')); await wait(250);
-  click(W, d.getElementById('sess-exit')); await wait(250);
-  click(W, d.getElementById('ps-save')); await wait(350);
+  click(W, d.getElementById('rs-go')); await until(() => d.getElementById('session-live').classList.contains('on'));
+  click(W, d.getElementById('sess-exit')); await until(() => d.getElementById('post-screen').classList.contains('on'));
+  click(W, d.getElementById('ps-save')); await until(() => !d.getElementById('post-screen').classList.contains('on'));
   const sr4 = (await W.CB_DB.raw('sessions')).filter(x => x.startedAt).sort((a, b) => a.startedAt < b.startedAt ? -1 : 1).pop();
   const se4 = (await W.CB_DB.getMany('series', [sr4.id]))[sr4.id];
   sr4.measured.device === null && sr4.measured.samples === 0 && !('rr' in se4) && !sr4.derived.hrv
